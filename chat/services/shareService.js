@@ -7,6 +7,11 @@ import { encrypt, decrypt } from './shareEncryption.js';
 import { ORG_API_BASE, SHARE_BASE_URL } from '../config.js';
 import inferenceService from './inference/inferenceService.js';
 import networkProxy from './networkProxy.js';
+import {
+    buildDefaultCouncilConfig,
+    normalizeCouncilConfig,
+    normalizeResponseMode
+} from '../domain/councilConfig.js';
 
 // ========== Share ID Normalization ==========
 
@@ -253,7 +258,9 @@ export function buildSharePayload(session, messages, opts = {}) {
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             searchEnabled: session.searchEnabled,
-            inferenceBackend: session.inferenceBackend || inferenceService.getDefaultBackendId()
+            inferenceBackend: session.inferenceBackend || inferenceService.getDefaultBackendId(),
+            responseMode: normalizeResponseMode(session.responseMode),
+            councilConfig: normalizeCouncilConfig(session.councilConfig, session.model)
         },
         messages: messages.map(m => {
             const msg = {
@@ -267,6 +274,11 @@ export function buildSharePayload(session, messages, opts = {}) {
                 reasoningDuration: m.reasoningDuration,
                 tokenCount: m.tokenCount
             };
+
+            if (m.turnId) msg.turnId = m.turnId;
+            if (m.parentUserMessageId) msg.parentUserMessageId = m.parentUserMessageId;
+            if (m.councilRequest) msg.councilRequest = m.councilRequest;
+            if (m.council) msg.council = m.council;
 
             // Preserve memory agent fields for proper rendering in shared view
             if (m.isLocalOnly) msg.isLocalOnly = true;
@@ -406,6 +418,11 @@ export function createSessionFromPayload(payload, shareId, ciphertext, generateI
         lastImportedAt: Date.now(),
         model: payload.session.model,
         inferenceBackend: backendId,
+        responseMode: normalizeResponseMode(payload.session.responseMode),
+        councilConfig: normalizeCouncilConfig(
+            payload.session.councilConfig,
+            payload.session.model
+        ),
         apiKey: sessionAccess?.token || null,
         apiKeyInfo: sessionAccess?.info || null,
         expiresAt: sessionAccess?.expiresAt || null,
@@ -428,6 +445,10 @@ export function createSessionFromPayload(payload, shareId, ciphertext, generateI
                 isShared: true
             }
         };
+    }
+
+    if (!session.councilConfig) {
+        session.councilConfig = buildDefaultCouncilConfig(payload.session.model);
     }
 
     return session;
