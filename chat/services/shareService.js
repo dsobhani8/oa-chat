@@ -8,6 +8,11 @@ import { ORG_API_BASE, SHARE_BASE_URL } from '../config.js';
 import inferenceService from './inference/inferenceService.js';
 import networkProxy from './networkProxy.js';
 import { buildBaseSharePayload } from './sharePayload.js';
+import {
+    buildDefaultCouncilConfig,
+    normalizeCouncilConfig,
+    normalizeResponseMode
+} from '../domain/councilConfig.js';
 
 // ========== Share ID Normalization ==========
 
@@ -249,6 +254,15 @@ export function buildSharePayload(session, messages, opts = {}) {
     const payload = buildBaseSharePayload(session, messages, {
         defaultBackendId: inferenceService.getDefaultBackendId()
     });
+    payload.session.responseMode = normalizeResponseMode(session.responseMode);
+    payload.session.councilConfig = normalizeCouncilConfig(session.councilConfig, session.model);
+    payload.messages.forEach((message, index) => {
+        const source = messages[index];
+        if (source?.turnId) message.turnId = source.turnId;
+        if (source?.parentUserMessageId) message.parentUserMessageId = source.parentUserMessageId;
+        if (source?.councilRequest) message.councilRequest = source.councilRequest;
+        if (source?.council) message.council = source.council;
+    });
 
     // Include shared access payload (legacy sharedApiKey preserved for compatibility)
     if (opts.shareApiKeyMetadata) {
@@ -366,6 +380,11 @@ export function createSessionFromPayload(payload, shareId, ciphertext, generateI
         lastImportedAt: Date.now(),
         model: payload.session.model,
         inferenceBackend: backendId,
+        responseMode: normalizeResponseMode(payload.session.responseMode),
+        councilConfig: normalizeCouncilConfig(
+            payload.session.councilConfig,
+            payload.session.model
+        ),
         apiKey: sessionAccess?.token || null,
         apiKeyInfo: sessionAccess?.info || null,
         expiresAt: sessionAccess?.expiresAt || null,
@@ -388,6 +407,10 @@ export function createSessionFromPayload(payload, shareId, ciphertext, generateI
                 isShared: true
             }
         };
+    }
+
+    if (!session.councilConfig) {
+        session.councilConfig = buildDefaultCouncilConfig(payload.session.model);
     }
 
     return session;
