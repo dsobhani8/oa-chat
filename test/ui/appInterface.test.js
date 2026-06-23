@@ -141,7 +141,8 @@ test('model picker renders cached provider metadata through its narrowed interfa
         app.state.pendingModelName = 'Auto Router';
         app.elements.modelPickerBtn = {
             innerHTML: '',
-            classList: { add() {} }
+            classList: { add() {} },
+            setAttribute() {}
         };
         const ui = createModelPickerInterface(app, {
             chatDBImpl: { saveSetting: async () => {}, saveSession: async () => {} }
