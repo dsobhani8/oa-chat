@@ -37,6 +37,10 @@ function createMockApp(overrides = {}) {
         getDefaultModelName: () => 'Default Model',
         getFallbackModelEntry: () => ({ id: 'model-a', name: 'Model A' }),
         normalizeModelName: (modelName) => `${modelName} normalized`,
+        setParallelDefaults: (options) => {
+            calls.push(['setParallelDefaults', options]);
+            return options;
+        },
         renderCurrentModel: () => calls.push(['renderCurrentModel']),
         getFilteredSessions: () => [{ id: 'session-1' }],
         toggleSessionStar: (sessionId) => calls.push(['toggleSessionStar', sessionId]),
@@ -286,7 +290,7 @@ test('component app facade exposes memory feature controls', async () => {
 });
 
 test('component app facade exposes an explicit compatibility contract', () => {
-    const { app } = createMockApp();
+    const { app, calls } = createMockApp();
     const facade = createComponentAppFacade(app, undefined, {
         ticketClientImpl: { getTicketCount: () => 0 }
     });
@@ -297,6 +301,8 @@ test('component app facade exposes an explicit compatibility contract', () => {
     assert.equal(facade.getCurrentSession(), null);
     assert.equal(facade.getDefaultModelName(), 'Default Model');
     assert.deepEqual(facade.getFallbackModelEntry(), { id: 'model-a', name: 'Model A' });
+    assert.deepEqual(facade.setParallelDefaults({ enabled: true }), { enabled: true });
+    assert.deepEqual(calls, [['setParallelDefaults', { enabled: true }]]);
     assert.equal(facade.notARealAppField, undefined);
 
     facade.searchEnabled = false;
