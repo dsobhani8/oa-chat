@@ -42,7 +42,8 @@ test('vanilla UI adapter is the owner of concrete component construction', () =>
         'Sidebar',
         'ModelPicker',
         'RightPanel',
-        'MessageNavigation'
+        'MessageNavigation',
+        'BillingModal'
     ];
 
     for (const component of requiredComponents) {
@@ -82,6 +83,7 @@ test('shell components use injected persistence instead of IndexedDB', () => {
 test('shell components use injected backend services instead of importing gateways', () => {
     const components = [
         'chat/components/AccountModal.js',
+        'chat/components/BillingModal.js',
         'chat/components/ChatInput.js',
         'chat/components/MemoryEditor.js',
         'chat/components/ShareModals.js',
@@ -91,7 +93,7 @@ test('shell components use injected backend services instead of importing gatewa
         'chat/components/VerifierAttestationModal.js',
         'chat/components/WelcomePanel.js'
     ];
-    const forbiddenImports = /from ['"].*\.\.\/services\/(ticketClient|networkLogger|networkProxy|inference\/inferenceService|verifier|shareService|accountService|syncService)\.js['"]/;
+    const forbiddenImports = /from ['"].*\.\.\/services\/(ticketClient|networkLogger|networkProxy|inference\/inferenceService|verifier|shareService|accountService|billingClient|syncService)\.js['"]/;
 
     for (const componentPath of components) {
         const source = read(componentPath);
@@ -215,6 +217,48 @@ test('parallel aggregate messages omit redundant visible mode and completion lab
         source.includes("const citationScopeId = buildCitationScopeId(messageId, 'synthesis');"),
         true,
         'Council synthesis should render its own citation controls'
+    );
+    assert.equal(
+        source.includes('entry.reasoning'),
+        true,
+        'Parallel lanes should render the same reasoning trace UI when a lane returns thinking content'
+    );
+    assert.equal(
+        source.includes('synthesis.reasoning'),
+        true,
+        'Council synthesis should render the same reasoning trace UI when the synthesis model returns thinking content'
+    );
+    assert.equal(
+        source.includes('buildReasoningTrace('),
+        true,
+        'Council/Parallel reasoning should reuse the normal assistant reasoning trace component'
+    );
+    assert.equal(
+        source.includes('entry.streamingReasoning'),
+        true,
+        'Parallel lanes should render live reasoning state while a lane stream is running'
+    );
+    const controllerSource = read('chat/application/councilController.js');
+    const chatAreaSource = read('chat/components/ChatArea.js');
+    assert.equal(
+        controllerSource.includes('this.inferenceService.streamCompletion('),
+        true,
+        'Parallel/Council lanes should use the streaming inference path'
+    );
+    assert.equal(
+        chatAreaSource.includes('this.councilReasoningStreams = new Map();'),
+        true,
+        'Parallel/Council reasoning needs lane-scoped buffers for concurrent streams'
+    );
+    assert.equal(
+        chatAreaSource.includes('clearAllCouncilReasoningStreams()'),
+        true,
+        'Parallel/Council reasoning timers should be cleared when the chat area rerenders'
+    );
+    assert.equal(
+        chatAreaSource.includes('this.clearCouncilReasoningStream(reasoningId);'),
+        true,
+        'Parallel/Council reasoning timers should self-clear if their DOM target disappears'
     );
     assert.equal(
         source.includes('council-response-sources-row'),
@@ -641,6 +685,237 @@ test('prompt edit model chips mirror active Parallel model lanes', () => {
     assert.equal(appSource.includes('this.chatArea?.updateEditModelPickerButton?.();'), true);
     assert.equal(styles.includes('.edit-prompt-model-group'), true);
     assert.equal(styles.includes('.edit-prompt-model-chip'), true);
+});
+
+test('right panel shows lane-scoped ephemeral keys for Parallel and Council', () => {
+    const source = read('chat/components/RightPanel.js');
+    const appSource = read('chat/app.js');
+
+    assert.equal(source.includes('getCouncilAccessRows()'), true);
+    assert.equal(source.includes('getPendingCouncilAccessConfig()'), true);
+    assert.equal(source.includes('this.app.getPendingCouncilConfig?.()'), true);
+    assert.equal(source.includes('this.app.buildPersistedParallelCouncilConfig?.()'), true);
+    assert.equal(source.includes("label: 'Model 1'"), true);
+    assert.equal(source.includes("label: 'Model 2'"), true);
+    assert.equal(source.includes("label: 'Council'"), true);
+    assert.equal(source.includes('session?.councilAccess'), true);
+    assert.equal(source.includes('generateCouncilAccessKeyPanelHTML'), true);
+    assert.equal(source.includes('Ephemeral Access Keys'), true);
+    assert.equal(source.includes('Keys persist until expiry or exhaustion.'), true);
+    assert.equal(source.includes('this.generateAccessKeyPanelHTML(hasApiKey)'), true);
+    assert.equal(source.includes('hasAnyActiveAccessKey()'), true);
+    assert.equal(source.includes("if (config.outputMode === 'council')"), true);
+    assert.equal(source.includes("|| access?.synthesis?.apiKey"), false);
+    assert.equal(source.includes('model: members'), false);
+    assert.equal(source.includes('row.model'), false);
+    assert.equal(source.includes('maskCouncilAccessToken(access)'), true);
+    assert.equal(source.includes('currentEphemeralKeyId: null'), true);
+    assert.equal(source.includes('getLaneAttestationAccessInfo(access)'), true);
+    assert.equal(source.includes('data-council-attestation-lane'), true);
+    assert.equal(source.includes('button.dataset.councilAttestationLane'), true);
+    assert.equal(source.includes('ensureLaneExpirationTimer()'), true);
+    assert.equal(source.includes('refreshLaneExpiryPanelIfNeeded()'), true);
+    assert.equal(source.includes('this.refreshLaneExpiryPanelIfNeeded(true);'), true);
+    assert.equal(source.includes('(this.expiresAt && !this.isExpired)'), true);
+    assert.equal(source.includes("document.getElementById('api-key-expiry')"), true);
+    assert.equal(source.includes('setInterval(() =>'), true);
+    assert.equal(appSource.includes('this.rightPanel?.onSessionChange?.(null);'), true);
+});
+
+test('billing checkout uses a minimal full-page plan flow', () => {
+    const source = read('chat/components/BillingModal.js');
+    const html = read('chat/index.html');
+
+    assert.equal(html.includes('aria-label="Upgrade"'), true);
+    assert.equal(html.includes('<span>Upgrade</span>'), true);
+    assert.equal(source.includes('fixed inset-0 flex h-screen w-screen'), true);
+    assert.equal(source.includes('billing-back-btn'), true);
+    assert.equal(source.includes('Premium Checkout'), false);
+    assert.equal(source.includes('<h1 id="billing-modal-title"'), true);
+    assert.equal(source.includes("${this.escapeHtml(plan.name || 'Premium')}"), true);
+    assert.equal(source.includes('${this.escapeHtml(plan.priceLabel)} · ${plan.ticketsPerPeriod} tickets per month'), true);
+    assert.equal(source.includes('Manage billing'), true);
+    assert.equal(source.includes('Get Premium Plan'), true);
+    assert.equal(source.includes('Current Plan'), false);
+    assert.equal(source.includes('Download tickets'), true);
+    assert.equal(source.includes('Retry ticket download'), true);
+    assert.equal(source.includes('Preparing tickets...'), true);
+    assert.equal(source.includes('renderTicketStatusLine()'), true);
+    assert.equal(source.includes('download pending'), true);
+    assert.equal(source.includes('ready'), true);
+    assert.equal(source.includes('downloaded'), true);
+    assert.equal(source.includes('Payment complete. Check your email for your ticket link.'), true);
+    assert.equal(source.includes('pollStatusAfterCheckout'), false);
+    assert.equal(source.includes('Still waiting for tickets to become claimable'), false);
+    assert.equal(source.includes('rememberCheckoutEmail(sessionId)'), true);
+    assert.equal(source.includes('isGeneratedDemoEmail(checkoutEmail)'), true);
+    assert.equal(source.includes('checkout(checkoutEmail)'), true);
+    assert.equal(source.includes('Your Premium plan is already active.'), false);
+    assert.equal(source.includes('hasBlockingSubscription'), false);
+    assert.equal(source.includes('const canCheckout = serverReady && !this.busyAction;'), true);
+    assert.equal(source.includes('billing-claim-btn'), true);
+    assert.equal(source.includes('handleTicketDownload()'), true);
+    assert.equal(source.includes('getOrCreatePendingTicketClaim(email, requestCount)'), true);
+    assert.equal(source.includes('claim.requests.map(request => request.blindedRequest)'), true);
+    assert.equal(source.includes('buildTicketPayloadFromClaim({'), true);
+    assert.equal(source.includes('downloadTicketPayload(payload)'), true);
+    assert.equal(source.includes('clearPendingTicketClaim'), true);
+    assert.equal(source.includes('addDemoTickets'), true);
+    assert.equal(source.includes('Production subscription tickets are not enabled yet.'), true);
+    assert.equal(source.includes('this.app.services.tickets.importTickets(payload)'), false);
+    assert.equal(source.includes('attachPageLifecycleListeners()'), true);
+    assert.equal(source.includes("this.busyAction !== 'portal' && this.busyAction !== 'checkout'"), true);
+    assert.equal(source.includes('ensureBillingAccountStatus()'), true);
+    assert.equal(source.includes('ensureDemoAccountEmail'), true);
+    assert.equal(source.includes('createAccount(email)'), true);
+    assert.equal(source.includes('status?.accountExists === false'), true);
+    assert.equal(source.includes('Reset test billing'), true);
+    assert.equal(source.includes('isLocalBillingDemo()'), true);
+    assert.equal(source.includes('handleResetTestBilling()'), true);
+    assert.equal(source.includes('billing-login-email'), false);
+    assert.equal(source.includes('billing-login-btn'), false);
+    assert.equal(source.includes('billing-create-account-btn'), false);
+    assert.equal(source.includes('billing-logout-btn'), false);
+    assert.equal(source.includes('type="email"'), false);
+    assert.equal(source.includes('autocomplete="email"'), false);
+    assert.equal(source.includes('Log out'), false);
+    assert.equal(source.includes('Log in'), false);
+    assert.equal(source.includes('Create account'), false);
+    assert.equal(source.includes('statusForEmail?.accountExists === true'), false);
+    assert.equal(source.includes('id="billing-email"'), false);
+    assert.equal(source.includes('Demo account email'), false);
+    assert.equal(source.includes('Sign in to continue'), false);
+    assert.equal(source.includes('Demo account ready'), false);
+    assert.equal(source.includes('renderMetric'), false);
+    assert.equal(source.includes('renderEntitlements'), false);
+    assert.equal(source.includes('Browser-side blinded ticket claim and local finalization'), false);
+    assert.equal(source.includes('Only this plan is selectable in the MVP'), false);
+    assert.equal(source.includes('this.statusEmail = null;'), true);
+    assert.equal(source.includes('this.statusEmail = email;'), true);
+    assert.equal(source.includes('getCurrentStatus()'), true);
+    assert.equal(source.includes('this.status = null;'), true);
+});
+
+test('billing client and demo server support hidden demo accounts', () => {
+    const clientSource = read('chat/services/billingClient.js');
+    const serverSource = read('scripts/billing-demo-server.mjs');
+    const debugPage = read('chat/billing-demo.html');
+
+    assert.equal(clientSource.includes("localStorage.removeItem(EMAIL_KEY);"), true);
+    assert.equal(clientSource.includes("localStorage.removeItem(DEMO_TICKET_KEY);"), true);
+    assert.equal(clientSource.includes('ensureDemoAccountEmail()'), true);
+    assert.equal(clientSource.includes('async ensureDemoAccount()'), true);
+    assert.equal(clientSource.includes('async createAccount(email)'), true);
+    assert.equal(clientSource.includes("this.post('/api/billing/account'"), true);
+    assert.equal(serverSource.includes("url.pathname === '/api/billing/account'"), true);
+    assert.equal(serverSource.includes("return_url: buildAppReturnUrl({ billing: 'portal' })"), true);
+    assert.equal(serverSource.includes('async function handleAccount(req, res)'), true);
+    assert.equal(serverSource.includes('accountExists: true'), true);
+    assert.equal(serverSource.includes('accountExists: !!customer'), true);
+    assert.equal(serverSource.includes('function ensureAccountRecord(email)'), true);
+    assert.equal(serverSource.includes('customer_email = email'), true);
+    assert.equal(serverSource.includes('resolveEmailFromCheckoutSession(session)'), true);
+    assert.equal(serverSource.includes('findEmailByInvoice(invoice)'), true);
+    assert.equal(serverSource.includes('already has an active subscription'), false);
+    assert.equal(serverSource.includes('function hasBlockingSubscription'), false);
+    assert.equal(debugPage.includes('async function ensureAccountExists(email)'), true);
+    assert.equal(debugPage.includes("await post('/api/billing/account', { email });"), true);
+    assert.equal(debugPage.includes('await ensureAccountExists(email);'), true);
+});
+
+test('billing subscription ticket links are email-delivered and redeemed client-side', () => {
+    const appSource = read('chat/app.js');
+    const clientSource = read('chat/services/billingClient.js');
+    const serverSource = read('scripts/billing-demo-server.mjs');
+
+    assert.equal(appSource.includes('tryRedeemBillingTicketLink(code)'), true);
+    assert.equal(appSource.includes('billing.getTicketLink(code)'), true);
+    assert.equal(appSource.includes('billing.redeemTicketLink(code)'), true);
+    assert.equal(appSource.includes('Ticket JSON downloaded.'), true);
+    assert.equal(appSource.includes("link?.redeemed && !billing.getPendingTicketLinkClaim?.(code)"), true);
+    assert.equal(appSource.includes('Retrying saved Premium ticket download...'), true);
+    assert.equal(appSource.includes('This Premium ticket link has already been redeemed.'), true);
+    assert.equal(appSource.includes('!error?.status || error.status === 404 || error.status >= 500'), true);
+
+    assert.equal(clientSource.includes('async getTicketLink(code)'), true);
+    assert.equal(clientSource.includes('async claimTicketLink(code, blindedRequests)'), true);
+    assert.equal(clientSource.includes('async redeemTicketLink(code)'), true);
+    assert.equal(clientSource.includes('getOrCreatePendingTicketLinkClaim'), true);
+    assert.equal(clientSource.includes('downloadTicketPayload(payload)'), true);
+    assert.equal(clientSource.includes('addDemoTickets(tickets)'), true);
+
+    assert.equal(serverSource.includes("url.pathname.match(/^\\/api\\/ticket-links\\/([^/]+)$/)"), true);
+    assert.equal(serverSource.includes("url.pathname.match(/^\\/api\\/ticket-links\\/([^/]+)\\/claim$/)"), true);
+    assert.equal(serverSource.includes('ensureSubscriptionTicketLink({'), true);
+    assert.equal(serverSource.includes('function getInvoiceLinePriceId(line)'), true);
+    assert.equal(serverSource.includes('line.pricing?.price_details?.price'), true);
+    assert.equal(serverSource.includes('configured prices:'), true);
+    assert.equal(serverSource.includes('invoice prices:'), true);
+    assert.equal(serverSource.includes('storePendingPaidInvoice(invoice, eventCreated)'), true);
+    assert.equal(serverSource.includes('shouldRecordEvent = !result?.ignored && !result?.pending'), true);
+    assert.equal(serverSource.includes('processResolvablePendingPaidInvoices()'), true);
+    assert.equal(serverSource.includes('if (result?.ignored || result?.pending)'), true);
+    assert.equal(serverSource.includes('processPendingPaidInvoicesForCustomer(customerId, email)'), true);
+    assert.equal(serverSource.includes('pendingInvoices: parsed.pendingInvoices || {}'), true);
+    assert.equal(serverSource.includes('buildTicketLinkUrl(link.code)'), true);
+    assert.equal(serverSource.includes("url.pathname = '/'"), true);
+    assert.equal(serverSource.includes("url.searchParams.set('tickets', code)"), true);
+    assert.equal(serverSource.includes('entitlementId: link.entitlementId'), true);
+    assert.equal(serverSource.includes('function buildTicketLinkClaimId(link, blindedRequests)'), true);
+    assert.equal(serverSource.includes("scope: 'subscription_ticket_link'"), true);
+    assert.equal(serverSource.includes('const legacyClaimId = buildClaimId(link.email, blindedRequests);'), true);
+    assert.equal(serverSource.includes('targetEntitlementId || !hasTicketLinkForEntitlement(entitlement.id)'), true);
+    assert.equal(serverSource.includes('getManualClaimableTicketCount(entitlement)'), true);
+    assert.equal(serverSource.includes('function hasTicketLinkForEntitlement(entitlementId)'), true);
+    assert.equal(serverSource.includes('link.deliveredTicketUrl === ticketUrl'), true);
+    assert.equal(serverSource.includes('link.deliveredAppUrl = APP_URL'), true);
+    assert.equal(serverSource.includes('[Billing email demo]'), true);
+    assert.equal(serverSource.includes('async function sendSmtpMail'), true);
+    assert.equal(serverSource.includes('SMTP delivery timed out.'), true);
+    assert.equal(serverSource.includes("link.deliveryMethod = 'console-fallback';"), true);
+    assert.equal(serverSource.includes('includeStatus: false'), true);
+    assert.equal(serverSource.includes('Ticket link has already been redeemed.'), true);
+});
+
+test('billing demo server starts a fresh checkout session for each request', () => {
+    const source = read('scripts/billing-demo-server.mjs');
+
+    assert.equal(source.includes('const checkoutReturnUrls = buildCheckoutReturnUrls();'), true);
+    assert.equal(source.includes('successUrl: checkoutReturnUrls.successUrl'), true);
+    assert.equal(source.includes('cancelUrl: checkoutReturnUrls.cancelUrl'), true);
+    assert.equal(source.includes('function hasReusableCheckout'), false);
+    assert.equal(source.includes('reused: true'), false);
+    assert.equal(source.includes('existingAccount.pendingCheckout.url'), false);
+});
+
+test('completed assistant content uses shared markdown finalization path', () => {
+    const source = read('chat/components/ChatArea.js');
+    const appSource = read('chat/app.js');
+
+    assert.equal(source.includes('renderCompletedAssistantContent(message, scopeId = message?.id)'), true);
+    assert.equal(source.includes('async finalizeStreamingMessage(message, options = {})'), true);
+    assert.equal(source.includes('const forceFullRender = options.forceFullRender === true;'), true);
+    assert.equal(source.includes('if (isReasoningFinalized && !forceFullRender)'), true);
+    assert.equal(source.includes('window.MessageTemplates.insertRawCitationMarkers'), true);
+    assert.equal(source.includes('this.app.processContentWithLatex(processedContent)'), true);
+    assert.equal(source.includes('window.MessageTemplates.addInlineCitationMarkers'), true);
+    assert.equal(source.includes('window.MessageTemplates.enhanceInlineLinks(processedContent, scopeId)'), true);
+    assert.equal(source.includes('contentEl.innerHTML = this.renderCompletedAssistantContent(message, message.id);'), true);
+    assert.equal(
+        /Re-render the completed message[\s\S]*?await this\.chatArea\.finalizeStreamingMessage\(streamingMessage\);[\s\S]*?Finalize reasoning display/.test(appSource),
+        true,
+        'normal send completion should run the final render pass before reasoning finalization'
+    );
+    assert.equal(
+        appSource.includes('Re-render message if no content (to show "no response" notice and clean up empty bubbles)'),
+        false,
+        'completed text responses must not be left on partial streaming markdown DOM'
+    );
+    assert.equal(
+        appSource.includes('this.chatArea.finalizeStreamingMessage(message, { forceFullRender: true });'),
+        true,
+        'citation enrichment should rebuild Sources UI even when reasoning was already finalized'
+    );
 });
 
 test('council review setting drives synthesis output mode in ChatInput', () => {

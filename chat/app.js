@@ -2075,9 +2075,11 @@ class ChatApp {
         // Check for session in URL (?s=sessionId)
         const sessionCheck = this.checkForUrlSession();
         if (sessionCheck && typeof sessionCheck.then === 'function') {
-            sessionCheck.finally(() => this.handlePendingTicketCode());
+            sessionCheck.finally(() => {
+                void this.handlePendingTicketCode();
+            });
         } else {
-            this.handlePendingTicketCode();
+            void this.handlePendingTicketCode();
         }
 
         // Start update checks for new app versions
@@ -2163,14 +2165,62 @@ class ChatApp {
     /**
      * Apply any pending ticket code after UI is ready.
      */
-    handlePendingTicketCode() {
+    async handlePendingTicketCode() {
         if (!this.pendingTicketCode || !this.rightPanel) return;
 
         const { code, autoRedeem, source } = this.pendingTicketCode;
         this.pendingTicketCode = null;
 
         if (!code) return;
+        const handledByBilling = await this.tryRedeemBillingTicketLink(code);
+        if (handledByBilling) return;
         this.ingestTicketCode(code, { autoRedeem: !!autoRedeem, source });
+    }
+
+    async tryRedeemBillingTicketLink(code) {
+        const billing = this.ui?.interfaces?.componentApp?.services?.billing || globalThis.billingClient;
+        if (!billing?.getTicketLink || !billing?.redeemTicketLink) {
+            return false;
+        }
+
+        let link;
+        try {
+            link = await billing.getTicketLink(code);
+        } catch (error) {
+            if (!error?.status || error.status === 404 || error.status >= 500) {
+                return false;
+            }
+            this.showToast(error.message || 'Unable to load Premium tickets from this link.', 'error', 7000);
+            return true;
+        }
+
+        if (link?.redeemed && !billing.getPendingTicketLinkClaim?.(code)) {
+            this.showToast('This Premium ticket link has already been redeemed.', 'success', 6000);
+            return true;
+        }
+
+        const ticketCount = Math.max(0, Math.floor(Number(link?.ticket_count) || 0));
+        this.showToast(
+            link?.redeemed
+                ? 'Retrying saved Premium ticket download...'
+                : `Loading ${ticketCount || 'Premium'} ticket${ticketCount === 1 ? '' : 's'}...`,
+            'success',
+            5000
+        );
+
+        try {
+            const result = await billing.redeemTicketLink(code);
+            const loadedCount = result?.tickets?.length || ticketCount;
+            this.showToast(
+                `${loadedCount} Premium ticket${loadedCount === 1 ? '' : 's'} loaded. Ticket JSON downloaded.`,
+                'success',
+                7000
+            );
+            this.ui?.components?.billingModal?.refreshAll?.({ silent: true });
+        } catch (error) {
+            this.showToast(error.message || 'Unable to load Premium tickets from this link.', 'error', 7000);
+        }
+        return true;
     }
 
     /**
@@ -3783,6 +3833,9 @@ class ChatApp {
         if (this.pendingCouncilConfig.enabled === true) {
             this.pendingCouncilLayoutPreference = true;
         }
+        if (!this.state.currentSessionId) {
+            this.rightPanel?.onSessionChange?.(null);
+        }
         return this.pendingCouncilConfig;
     }
 
@@ -3827,6 +3880,9 @@ class ChatApp {
     applyPersistedParallelPendingConfig(fallbackModelName = null) {
         this.pendingCouncilConfig = this.buildPersistedParallelCouncilConfig(fallbackModelName);
         this.pendingCouncilLayoutPreference = this.parallelModeEnabled === true;
+        if (!this.state.currentSessionId) {
+            this.rightPanel?.onSessionChange?.(null);
+        }
         return this.pendingCouncilConfig;
     }
 
@@ -5818,13 +5874,12 @@ class ChatApp {
 
                 // Only update UI if still viewing the same session
                 if (this.chatArea && this.isViewingSession(session.id)) {
+                    // Re-render the completed message so partial streaming markdown/citation DOM
+                    // is replaced by the final render pipeline.
+                    await this.chatArea.finalizeStreamingMessage(streamingMessage);
                     // Finalize reasoning display with markdown processing and timing
                     if (streamingMessage.reasoning) {
                         this.chatArea.finalizeReasoningDisplay(streamingMessageId, streamingMessage.reasoning, streamingMessage.reasoningDuration);
-                    }
-                    // Re-render message if no content (to show "no response" notice and clean up empty bubbles)
-                    if (!streamingMessage.content && (!streamingMessage.images || streamingMessage.images.length === 0)) {
-                        await this.chatArea.finalizeStreamingMessage(streamingMessage);
                     }
                 }
 
@@ -9165,7 +9220,7 @@ class ChatApp {
 
             // Re-render the message to show updated citations
             if (this.chatArea) {
-                await this.chatArea.finalizeStreamingMessage(message);
+                await this.chatArea.finalizeStreamingMessage(message, { forceFullRender: true });
             }
         } catch (error) {
             console.debug('Error enriching citations:', error);
