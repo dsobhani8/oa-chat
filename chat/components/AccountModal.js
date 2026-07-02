@@ -68,13 +68,22 @@ class AccountModal {
         }
     }
 
+    getVerifiedAccountId() {
+        if (!this.accountState?.accountId || !this.accountState?.sessionVerified) return '';
+        return String(this.accountState.accountId).trim();
+    }
+
     updateTabIndicator() {
         const tabBtn = document.getElementById('account-tab-btn');
         if (!tabBtn) return;
         // Only show logged-in (green) after session is verified with server
         const isLoggedIn = this.accountState?.accountId && this.accountState?.sessionVerified;
         tabBtn.dataset.status = isLoggedIn ? 'logged-in' : 'none';
+        const labelText = 'Account';
         tabBtn.title = isLoggedIn ? 'Account (logged in)' : 'Account';
+        tabBtn.setAttribute('aria-label', labelText);
+        const label = tabBtn.querySelector('span:last-child');
+        if (label) label.textContent = labelText;
     }
 
     open() {
@@ -364,6 +373,15 @@ class AccountModal {
         }
     }
 
+    async handleLocalDemoAccount() {
+        try {
+            await this.accountService.createLocalDemoAccount(this.accountInputValue);
+            this.app?.showToast?.('Local test account ready', 'success');
+        } catch (error) {
+            this.app?.showToast?.(error.message || 'Unable to create local test account', 'error');
+        }
+    }
+
     async handleAccountCopyId() {
         if (!this.accountState?.accountId) return;
         try {
@@ -607,6 +625,8 @@ class AccountModal {
         const passkeySupported = state.passkeySupported;
         const isBusy = state.busy;
         const action = state.action;
+        const localDemoAvailable = !!this.accountService.isLocalDemoAccountAvailable?.();
+        const showRecovery = this.showRecoveryInput;
 
         // Recovery flow UI (verifying/adding passkey)
         if (this.recoveryStep === 'verifying' || this.recoveryStep === 'adding_passkey') {
@@ -618,8 +638,19 @@ class AccountModal {
             return this.renderRecoveryCompleteUI();
         }
 
+        if (accountId && !state.sessionVerified) {
+            return this.renderLockedAccountUI({
+                accountId,
+                formattedAccountId,
+                passkeySupported,
+                isBusy,
+                showRecovery
+            });
+        }
+
         // Logged in state - don't show errors here since login was successful
         if (accountId) {
+            const isLocalDemo = !!state.localDemoAccount;
             // Always get fresh status
             const syncStatus = this.syncService.getStatus();
             const isSyncing = syncStatus.syncing;
@@ -664,31 +695,33 @@ class AccountModal {
                         <div class="flex items-center gap-4 mb-3">
                             <div class="flex items-center gap-1.5">
                                 <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-                                <span class="text-xs text-muted-foreground">Logged in</span>
+                                <span class="text-xs text-muted-foreground">${isLocalDemo ? 'Local test account' : 'Logged in'}</span>
                             </div>
+                            ${!isLocalDemo ? `
                             <div class="flex items-center gap-1.5">
                                 <span class="w-2 h-2 rounded-full ${syncIndicatorColor} ${isSyncing ? 'animate-pulse' : ''}"></span>
                                 <span class="text-xs ${syncStatusColor}">${syncStatusText}</span>
                             </div>
+                            ` : ''}
                         </div>
                         <button id="account-copy-id-btn" class="account-number-text font-mono text-lg tracking-widest text-foreground mb-1 whitespace-nowrap hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer bg-transparent border-none p-0" type="button" title="Copy account ID">
                             ${this.escapeHtml(formattedAccountId)}
                         </button>
-                        <p class="text-[11px] text-muted-foreground">Encrypted sync for tickets & preferences</p>
+                        <p class="text-[11px] text-muted-foreground">${isLocalDemo ? 'Localhost account test identity' : 'Encrypted sync for tickets & preferences'}</p>
                     </div>
 
-                    <p class="text-[11px] text-muted-foreground text-center mb-3">Chat history sync coming soon</p>
+                    <p class="text-[11px] text-muted-foreground text-center mb-3">${isLocalDemo ? 'Use only for local account tests' : 'Chat history sync coming soon'}</p>
 
                     <div class="flex gap-3">
                         <button id="account-clear-btn" class="btn-ghost-hover flex-1 h-9 rounded-lg text-sm border border-border bg-background text-foreground transition-colors" type="button">
                             Log out
                         </button>
-                        <button id="account-sync-btn" class="btn-ghost-hover flex-1 h-9 rounded-lg text-sm border border-border bg-background transition-colors disabled:opacity-50 flex items-center justify-center gap-2" type="button" ${isSyncing ? 'disabled' : ''}>
+                        ${!isLocalDemo ? `<button id="account-sync-btn" class="btn-ghost-hover flex-1 h-9 rounded-lg text-sm border border-border bg-background transition-colors disabled:opacity-50 flex items-center justify-center gap-2" type="button" ${isSyncing ? 'disabled' : ''}>
                             <svg class="w-4 h-4 ${isSyncing ? 'animate-spin' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"></path>
                             </svg>
                             ${isSyncing ? 'Syncing...' : 'Sync'}
-                        </button>
+                        </button>` : ''}
                     </div>
                 </div>
             `;
@@ -697,7 +730,6 @@ class AccountModal {
         // No account - show create/login
         const accountValue = this.escapeHtml(this.accountInputValue || '');
         const recoveryValue = this.escapeHtml(this.recoveryInputValue || '');
-        const showRecovery = this.showRecoveryInput;
 
         return `
             <div role="dialog" aria-modal="true" class="${MODAL_CLASSES}" style="padding:24px 24px 18px">
@@ -783,6 +815,12 @@ class AccountModal {
                         Create new account
                     </button>
 
+                    ${localDemoAvailable ? `
+                        <button id="local-demo-account-btn" class="btn-ghost-hover mt-2 w-full h-9 rounded-lg text-xs border border-dashed border-border bg-background text-muted-foreground transition-colors" type="button">
+                            Use local test account
+                        </button>
+                    ` : ''}
+
                     <!-- Divider -->
                     <div class="flex items-center gap-3" style="margin:16px 0">
                         <div class="flex-1 h-px bg-border"></div>
@@ -849,6 +887,94 @@ class AccountModal {
                 </div>
 
                 ${state.error ? `<p class="text-xs text-destructive mt-3 text-center">${this.escapeHtml(state.error)}</p>` : ''}
+            </div>
+        `;
+    }
+
+    renderLockedAccountUI({ formattedAccountId, passkeySupported, isBusy, showRecovery }) {
+        const state = this.accountState || {};
+        const recoveryValue = this.escapeHtml(this.recoveryInputValue || '');
+
+        return `
+            <div role="dialog" aria-modal="true" class="${MODAL_CLASSES}">
+                <style>
+                    .account-input-wrap {
+                        background: hsl(var(--color-muted) / 0.25);
+                        border: 1px solid hsl(var(--color-border));
+                        transition: border-color 0.15s, box-shadow 0.15s;
+                    }
+                    .account-input-wrap:focus-within {
+                        border-color: hsl(var(--color-muted-foreground));
+                        box-shadow: 0 0 0 3px hsl(var(--color-muted) / 0.2);
+                    }
+                    .dark .account-input-wrap {
+                        background: rgba(255,255,255,0.04);
+                    }
+                    .account-recovery-link {
+                        text-decoration: underline transparent;
+                        text-underline-offset: 2px;
+                        transition: text-decoration-color 0.15s, color 0.15s;
+                    }
+                    .account-recovery-link:hover {
+                        text-decoration-color: currentColor;
+                        color: hsl(var(--color-foreground));
+                    }
+                </style>
+                ${this.renderHeader('Account')}
+                <div class="flex-1 flex flex-col items-center justify-center py-4">
+                    <div class="flex items-center gap-1.5 mb-3">
+                        <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+                        <span class="text-xs text-muted-foreground">Account locked</span>
+                    </div>
+                    <button id="account-copy-id-btn" class="account-number-text font-mono text-lg tracking-widest text-foreground mb-1 whitespace-nowrap hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer bg-transparent border-none p-0" type="button" title="Copy account ID">
+                        ${this.escapeHtml(formattedAccountId)}
+                    </button>
+                    <p class="text-[11px] text-muted-foreground text-center max-w-[260px]">
+                        Unlock this account to sync and use billing across devices.
+                    </p>
+                </div>
+
+                ${!passkeySupported ? `
+                    <div class="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive mb-3">
+                        Passkeys are not supported in this browser.
+                    </div>
+                ` : ''}
+
+                ${showRecovery ? `
+                    <div class="flex flex-col gap-2 mb-3">
+                        <div class="account-input-wrap flex items-center w-full h-10 rounded-lg">
+                            <input
+                                id="account-recovery-code-input"
+                                type="text"
+                                placeholder="Recovery code"
+                                class="flex-1 h-full px-3 text-sm bg-transparent text-foreground placeholder:text-muted-foreground/40 focus:outline-none"
+                                value="${recoveryValue}"
+                                ${isBusy ? 'disabled' : ''}
+                            />
+                            <button id="account-recovery-submit-btn" type="button" class="flex-shrink-0 w-8 h-8 m-1 rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors flex items-center justify-center disabled:opacity-50" title="Recover account" aria-label="Recover account" ${isBusy ? 'disabled' : ''}>
+                                <svg class="w-4 h-4" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                                </svg>
+                            </button>
+                        </div>
+                        <button id="account-recovery-toggle-btn" class="text-xs text-muted-foreground account-recovery-link py-1 text-left" type="button">
+                            Back to passkey login
+                        </button>
+                    </div>
+                ` : `
+                    <button id="account-passkey-btn" class="w-full h-9 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50" type="button" ${isBusy || !passkeySupported ? 'disabled' : ''}>
+                        ${isBusy && state.action === 'unlock' ? 'Unlocking...' : 'Unlock with passkey'}
+                    </button>
+                    <button id="account-recovery-toggle-btn" class="text-xs text-muted-foreground account-recovery-link py-2 text-left" type="button">
+                        Recover your account
+                    </button>
+                `}
+
+                ${state.error ? `<p class="text-xs text-destructive mb-3 text-center">${this.escapeHtml(state.error)}</p>` : ''}
+
+                <button id="account-clear-btn" class="btn-ghost-hover w-full h-9 rounded-lg text-sm border border-border bg-background text-foreground transition-colors" type="button">
+                    Log out
+                </button>
             </div>
         `;
     }
@@ -926,6 +1052,9 @@ class AccountModal {
 
         const generateBtn = document.getElementById('generate-account-btn');
         if (generateBtn) generateBtn.onclick = () => this.handleGenerateAccountNumber();
+
+        const localDemoBtn = document.getElementById('local-demo-account-btn');
+        if (localDemoBtn) localDemoBtn.onclick = () => this.handleLocalDemoAccount();
 
         const cancelCreationBtn = document.getElementById('cancel-creation-btn');
         if (cancelCreationBtn) cancelCreationBtn.onclick = () => this.handleCancelCreation();

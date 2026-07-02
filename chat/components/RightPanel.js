@@ -34,6 +34,7 @@ class RightPanel {
         this.isVisible = savedPanelVisible === 'true' ? true : savedPanelVisible === 'false' ? false : this.isDesktop;
 
         this.ticketCount = 0;
+        this.demoTicketCount = 0;
         this.apiKey = null;
         this.apiKeyInfo = null;
         this.expiresAt = null;
@@ -166,6 +167,7 @@ class RightPanel {
     initializeState() {
         // Load initial ticket count
         this.ticketCount = this.app.services.tickets.getTicketCount();
+        this.demoTicketCount = this.app.services.billing?.getDemoTicketCount?.() || 0;
         // Only auto-show form when no tickets if user hasn't explicitly set a preference
         if (this.ticketCount === 0 && this.invitationFormPreference === null) {
             this.showInvitationForm = true;
@@ -346,6 +348,11 @@ class RightPanel {
             this.loadNextTicket();
             this.renderTopSectionOnly(); // Only update top section, not logs
             this.updateStatusIndicator();
+        });
+
+        window.addEventListener('billing-demo-tickets-updated', () => {
+            this.demoTicketCount = this.app.services.billing?.getDemoTicketCount?.() || 0;
+            this.renderTopSectionOnly();
         });
 
         // Subscribe to network logger
@@ -775,6 +782,37 @@ class RightPanel {
         if (this.importStatus?.type === 'success') {
             setTimeout(() => {
                 if (this.importStatus?.type === 'success') {
+                    this.importStatus = null;
+                    this.renderTopSectionOnly();
+                }
+            }, 2500);
+        }
+    }
+
+    handleExportDemoTickets() {
+        try {
+            const exported = this.app.services.billing?.downloadDemoTicketPayload?.();
+            this.importStatus = exported
+                ? {
+                    type: 'success',
+                    message: `Exported ${this.demoTicketCount} demo ticket${this.demoTicketCount === 1 ? '' : 's'}.`
+                }
+                : {
+                    type: 'info',
+                    message: 'No demo tickets to export.'
+                };
+        } catch (error) {
+            this.importStatus = {
+                type: 'error',
+                message: error.message || 'Failed to export demo tickets.'
+            };
+        }
+
+        this.renderTopSectionOnly();
+
+        if (this.importStatus?.type === 'success' || this.importStatus?.type === 'info') {
+            setTimeout(() => {
+                if (this.importStatus?.type === 'success' || this.importStatus?.type === 'info') {
                     this.importStatus = null;
                     this.renderTopSectionOnly();
                 }
@@ -2012,6 +2050,19 @@ class RightPanel {
                     </button>
                 </div>
 
+                ${this.demoTicketCount > 0 ? `
+                <div class="mt-2 flex items-center justify-between gap-2 rounded-md border border-dashed border-border bg-background/70 px-2 py-1.5">
+                    <span class="text-[11px] font-medium text-muted-foreground">Demo tickets: <span class="font-semibold text-foreground">${this.demoTicketCount}</span></span>
+                    <button
+                        id="export-demo-tickets-btn"
+                        class="btn-ghost-hover inline-flex items-center justify-center px-2 py-1 text-[10px] rounded-md border border-border bg-background transition-all duration-200 shadow-sm"
+                        type="button"
+                    >
+                        Export JSON
+                    </button>
+                </div>
+                ` : ''}
+
                 ${this.showSplitControls ? `
                 <div id="split-controls" class="mt-2 flex items-center gap-1.5">
                     <button
@@ -2512,6 +2563,11 @@ class RightPanel {
         const exportBtn = document.getElementById('export-tickets-btn');
         if (exportBtn) {
             exportBtn.onclick = () => this.handleExportTickets();
+        }
+
+        const exportDemoBtn = document.getElementById('export-demo-tickets-btn');
+        if (exportDemoBtn) {
+            exportDemoBtn.onclick = () => this.handleExportDemoTickets();
         }
 
         // Split tickets controls

@@ -64,6 +64,16 @@ function formatAccountId(accountId) {
     return normalized.match(/.{1,4}/g)?.join(' ') || normalized;
 }
 
+function isLocalhostOrigin() {
+    if (typeof window === 'undefined') return false;
+    return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+}
+
+function generateLocalDemoAccountId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, byte => String(byte % 10)).join('');
+}
+
 function bytesToBase64(bytes) {
     let binary = '';
     for (let i = 0; i < bytes.length; i++) {
@@ -425,6 +435,7 @@ class AccountService {
             recoveryConfirmed: false,
             recoveryCode: null,
             recoveryRequired: false,
+            localDemoAccount: false,
             busy: false,
             action: null,
             error: null,
@@ -734,6 +745,16 @@ class AccountService {
             this.state.accountId = settings.accountId;
             this.state.credentialId = settings.credentialId || null;
             this.state.recoveryConfirmed = !!settings.recoveryConfirmed;
+            this.state.localDemoAccount = !!settings.localDemoAccount;
+
+            if (this.state.localDemoAccount && isLocalhostOrigin()) {
+                this.masterKey = crypto.getRandomValues(new Uint8Array(32));
+                this.state.sessionVerified = true;
+                this.state.isReady = true;
+                this.updateStatus();
+                this.notify();
+                return;
+            }
             
             // Try to restore session from persisted CryptoKey
             const hasKey = await this.loadMasterKey();
@@ -791,6 +812,7 @@ class AccountService {
             accountId: this.state.accountId,
             credentialId: this.state.credentialId,
             recoveryConfirmed: this.state.recoveryConfirmed,
+            localDemoAccount: !!this.state.localDemoAccount,
             updatedAt: Date.now()
         };
         await chatDB.saveSetting(ACCOUNT_SETTINGS_KEY, payload);
@@ -798,6 +820,38 @@ class AccountService {
 
     clearErrors() {
         this.setState({ error: null });
+    }
+
+    isLocalDemoAccountAvailable() {
+        return isLocalhostOrigin();
+    }
+
+    async createLocalDemoAccount(accountIdInput = '') {
+        if (!this.isLocalDemoAccountAvailable()) {
+            throw new Error('Local test accounts are only available on localhost.');
+        }
+
+        const accountId = normalizeAccountId(accountIdInput) || generateLocalDemoAccountId();
+        this.cancelPendingAccount();
+        this.masterKey = crypto.getRandomValues(new Uint8Array(32));
+        this.cryptoKey = null;
+        this.accessToken = null;
+        this.refreshToken = null;
+        this.recoveryPayload = null;
+        this.setState({
+            accountId,
+            credentialId: null,
+            recoveryConfirmed: false,
+            recoveryCode: null,
+            recoveryRequired: false,
+            localDemoAccount: true,
+            sessionVerified: true,
+            error: null,
+            busy: false,
+            action: null
+        });
+        await this.persistSettings();
+        return this.state.accountId;
     }
 
     setError(error) {
@@ -1537,6 +1591,7 @@ class AccountService {
         this.state.recoveryConfirmed = false;
         this.state.recoveryCode = null;
         this.state.recoveryRequired = false;
+        this.state.localDemoAccount = false;
         this.recoveryPayload = null;
         // Delete account settings from IndexedDB (not just set to null)
         if (chatDB) {

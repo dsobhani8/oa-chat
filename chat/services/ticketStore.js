@@ -130,12 +130,36 @@ class TicketStore {
         return { activeTickets, archivedTickets };
     }
 
+    isDemoBillingTicket(ticket) {
+        if (!ticket || typeof ticket !== 'object') return false;
+        const source = typeof ticket.source === 'string' ? ticket.source : '';
+        const finalizedTicket = typeof ticket.finalized_ticket === 'string' ? ticket.finalized_ticket : '';
+        return source === 'stripe-billing-demo' ||
+            ticket.ticket_mode === 'demo' ||
+            finalizedTicket.startsWith('demo_');
+    }
+
+    assertImportableTickets(tickets) {
+        const input = Array.isArray(tickets) ? tickets : [];
+        if (input.some(ticket => this.isDemoBillingTicket(ticket))) {
+            throw new Error('Demo billing ticket files cannot be imported as inference tickets.');
+        }
+    }
+
+    assertImportableTicketPayload(payload) {
+        if (!payload || typeof payload !== 'object') return;
+        if (payload.source?.type === 'stripe-subscription-mvp' && payload.source?.mode !== 'production') {
+            throw new Error('Demo billing ticket files cannot be imported as inference tickets.');
+        }
+    }
+
     extractImportTickets(payload) {
         if (!payload) {
             throw new Error('Invalid ticket file.');
         }
 
         if (Array.isArray(payload)) {
+            this.assertImportableTickets(payload);
             return this.splitTicketsByStatus(payload);
         }
 
@@ -143,11 +167,15 @@ class TicketStore {
             throw new Error('Invalid ticket file.');
         }
 
+        this.assertImportableTicketPayload(payload);
+
         if (payload.data && typeof payload.data === 'object') {
             if (payload.data.tickets) {
                 return this.extractImportTickets(payload.data.tickets);
             }
             if (Array.isArray(payload.data.active) || Array.isArray(payload.data.archived)) {
+                this.assertImportableTickets(payload.data.active);
+                this.assertImportableTickets(payload.data.archived);
                 return {
                     activeTickets: Array.isArray(payload.data.active) ? payload.data.active : [],
                     archivedTickets: Array.isArray(payload.data.archived) ? payload.data.archived : []
@@ -156,6 +184,8 @@ class TicketStore {
         }
 
         if (Array.isArray(payload.activeTickets) || Array.isArray(payload.archivedTickets)) {
+            this.assertImportableTickets(payload.activeTickets);
+            this.assertImportableTickets(payload.archivedTickets);
             return {
                 activeTickets: Array.isArray(payload.activeTickets) ? payload.activeTickets : [],
                 archivedTickets: Array.isArray(payload.archivedTickets) ? payload.archivedTickets : []
@@ -163,6 +193,8 @@ class TicketStore {
         }
 
         if (Array.isArray(payload.active) || Array.isArray(payload.archived)) {
+            this.assertImportableTickets(payload.active);
+            this.assertImportableTickets(payload.archived);
             return {
                 activeTickets: Array.isArray(payload.active) ? payload.active : [],
                 archivedTickets: Array.isArray(payload.archived) ? payload.archived : []
@@ -170,6 +202,7 @@ class TicketStore {
         }
 
         if (Array.isArray(payload.tickets)) {
+            this.assertImportableTickets(payload.tickets);
             return this.splitTicketsByStatus(payload.tickets);
         }
 
@@ -185,6 +218,10 @@ class TicketStore {
 
         input.forEach(ticket => {
             if (!ticket || !ticket.finalized_ticket) {
+                changed = true;
+                return;
+            }
+            if (this.isDemoBillingTicket(ticket)) {
                 changed = true;
                 return;
             }

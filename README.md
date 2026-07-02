@@ -23,7 +23,7 @@ Everything runs in the browser with no server backend. Each session uses a fresh
 3. Serve from the repo root:
    ```bash
    npm run dev
-   # visit http://localhost:8080
+   # visit http://localhost:8091
    ```
    `npm run dev` now initializes the `nanomem` submodule first, so a clone
    without `--recurse-submodules` fails fast instead of serving a browser-side
@@ -33,7 +33,7 @@ Production build + preview:
 ```bash
 npm run build
 npm run preview
-# visit http://localhost:8080
+# visit http://localhost:8091
 ```
 
 ### Architecture (1-minute overview)

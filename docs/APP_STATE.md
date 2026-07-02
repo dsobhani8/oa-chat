@@ -25,19 +25,136 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
 
 ## Current Notes
 
-- 2026-07-01: Stripe subscription MVP is integrated into the OA app while fake
-  tickets remain separate from production redemption.
+- 2026-07-01: The product billing path is now account-scoped for
+  cross-device subscription continuity.
+  - `Upgrade` uses the current verified Account identity. If no account is
+    unlocked/server-verified, the compact modal shows the Premium plan and an
+    `Open Account` action. The product modal does not collect email and does not
+    expose raw account-linking mechanics. If an account ID is stored locally but
+    the session is not verified yet, the Account modal must show an
+    `Account locked` unlock/recovery path instead of the normal logged-in view;
+    billing cannot use that account until the session is verified.
+  - Product billing calls use `/api/billing/status`,
+    `/api/billing/checkout`, `/api/billing/portal`, and
+    `/api/billing/tickets/claim`. In localhost demo mode, the browser sends the
+    verified local account through `X-OA-Demo-Account-ID` as a stand-in for the
+    future production session cookie; request bodies do not carry `account_id`
+    as proof. Existing email/account-id endpoints remain debug scaffolding.
+  - Account billing syncs only Premium state, Stripe customer mapping, portal
+    availability, and unclaimed paid ticket batches. Any signed-in browser with
+    the same account can see `Premium active` and claim an unclaimed monthly
+    batch. Once a browser claims a batch, finalized tickets stay local under the
+    demo ticket store; moving claimed tickets across devices is a future E2EE
+    ticket-vault feature, not part of subscription sync.
+  - The billing demo server can simulate recurring monthly ticket delivery on a
+    short interval by setting `BILLING_DEMO_RENEWAL_SECONDS=30` when starting
+    `npm run billing:demo`. The simulator is pull-based: account
+    `/api/billing/status` calls check whether the verified account has active
+    Premium and whether a demo renewal period is due. If due, the server creates
+    one idempotent unclaimed `subscription_demo_renewal` entitlement for the
+    current period. Tickets are still not finalized until a browser claims the
+    entitlement with blinded requests. The product session/header status path is
+    the only path that creates these demo renewals; legacy query-string account
+    status remains debug/read-only for renewal purposes. Leave the env var unset
+    or `0` to disable simulated renewals.
+  - Stripe return is now a receipt/status-refresh path for the product flow. The
+    app keeps the user on the main chat page, polls account billing status until
+    Premium or unclaimed tickets appear, and then the modal shows
+    `Claim N Premium tickets` when a paid batch is available. Same-browser
+    Checkout no longer claims by `session_id` in the product path, though the
+    legacy Checkout Session claim endpoint remains for recovery/debug tests.
+    If the app returns from Stripe before Account restoration finishes, keep the
+    pending Checkout Session in browser storage and retry once the account
+    becomes verified; do not clear it just because `accountState.isReady` is
+    still false.
+    The frontend also refreshes account billing status when the tab becomes
+    visible, so local demo renewals can appear after reload/refocus without
+    relying on server push.
+  - Account subscription Checkout is guarded server-side. If an account has a
+    still-valid pending Premium Checkout Session, `/api/billing/checkout`
+    returns the same Stripe URL instead of creating a second subscription
+    Checkout; active/trialing/checkout-completed accounts are blocked from
+    opening another identical subscription checkout. The demo server also keeps
+    an in-process creation lock per account/price so concurrent tabs/devices
+    cannot both pass the pre-check before `account.pendingCheckout` is written.
+  - `POST /api/billing/tickets/claim` requires the account session/header and a
+    body containing only `blinded_requests`. The demo server picks one
+    unclaimed account entitlement, signs the blinded requests, marks that batch
+    claimed, and replays the same signed responses if the saved browser claim is
+    retried. Account status reports aggregate `claimableTickets` plus
+    `nextClaimableTickets`; the browser claims one entitlement-sized batch at a
+    time so multiple unclaimed periods remain additive. It never receives
+    finalized ticket IDs.
+  - Browser-finalized billing tickets are intentionally metadata-clean at the
+    ticket-object level: no account ID, Stripe customer, invoice, entitlement,
+    or billing plan fields are embedded in finalized tickets. Demo exports still
+    use the wrapper `source.mode: "demo"` and `demo_` ticket prefix so the normal
+    ticket importer can reject fake tickets.
+
+- 2026-07-01 historical baseline: Billing product flow was session-based and
+  did not require passkey/account login before the account-scoped subscription
+  sync pass above.
+  - Sidebar buttons are stable: `Account` and `Upgrade`. `Account` remains for
+    passkey/sync/account work; `Upgrade` is the Stripe billing surface and does
+    not depend on account state.
+  - The Upgrade surface is a compact modal, not a page. Desktop uses a centered
+    420-460px dialog; narrow screens use the same content as a bottom sheet.
+    The modal title is `Upgrade to Premium`, the visible plan copy is
+    `$35 / month`, `500 tickets each month`, and a short privacy line explaining
+    that billing is separate from inference. Active/trialing Premium shows
+    `Premium active` with `Manage billing`. There is no OA email field in the
+    product flow; Stripe Checkout collects email, and the browser stores the
+    returned Checkout Session email for same-browser status and portal access.
+    On localhost only, a quiet `Demo controls` disclosure can reset local
+    browser billing state without cancelling Stripe or mutating the demo server
+    store. The reset also invalidates any in-flight same-browser Checkout
+    Session claim so a late claim response cannot repopulate local demo tickets
+    or the stored billing email after reset.
+  - Product checkout uses email/session endpoints:
+    `/api/billing/checkout`, `/api/billing/status?email=...`,
+    `/api/billing/checkout-session`, and
+    `/api/billing/checkout-session/claim`. Account-bound and top-up endpoints
+    still exist as scaffolding/debug paths but are no longer used by the Upgrade
+    modal.
+  - The demo server blocks duplicate Premium subscriptions only when the browser
+    supplies a known billing email with `active`, `trialing`, or
+    `checkout_completed` Premium. Without a stored email, the app cannot know
+    cross-browser subscription state and starts normal Stripe Checkout; Stripe
+    still collects the customer email.
+  - Stripe return stores the `session_id` locally, generates blinded requests
+    for that Checkout Session, and calls
+    `/api/billing/checkout-session/claim`. The backend signs only after webhook
+    handling has created the paid ticket link/entitlement; otherwise it returns
+    `pending` and the browser retries. The modal keeps one in-flight claim loop
+    per returned Checkout Session so the success URL and saved pending-session
+    resume path cannot race each other. The email/console ticket link remains as
+    recovery for interrupted claims and renewal deliveries, but same-browser
+    purchases do not wait for the user to open email.
+    The read-only `/api/billing/checkout-session` response is intentionally
+    minimal: it reports session status/type/count but not account IDs, Stripe
+    customer IDs, ticket-link codes, or billing email. The successful claim path
+    may return the Checkout Session email so the same browser can remember
+    billing status and open the Stripe portal.
+  - The right panel shows demo billing tickets separately as `Demo tickets: N`
+    with an `Export JSON` action. This confirms the local billing flow without
+    mixing fake tickets into production `inference_tickets`.
+
+- 2026-07-01 historical baseline: Stripe subscription MVP is integrated into
+  the OA app while fake tickets remain separate from production redemption. The
+  session-based billing note above supersedes the older checkout product
+  behavior in this baseline entry.
   - The branch dev server uses `8091`; the billing shim uses `4242`, and
     `scripts/billing-demo-server.mjs` defaults `APP_URL` to
     `http://localhost:8091`. Stripe Checkout now returns to
     `/?billing=success` or `/?billing=cancelled`; success leaves the user on the
-    main chat page and shows `Payment complete. Check your email for your ticket
-    link.` instead of reopening the Premium modal. Cancelled Checkout still opens
-    the Premium modal. `BillingModal` removes only billing query params from the
-    URL.
-    The demo server asks Stripe for a fresh Checkout Session on each
-    `Get Premium Plan` click and stores the expected success/cancel URLs with
-    the pending session, avoiding stale debug-page redirects.
+    main chat page and now starts same-browser ticket loading by returned
+    `session_id`. Cancelled Checkout still opens the Premium modal.
+    `BillingModal` removes only billing query params from the URL. The demo
+    server asks Stripe for a fresh Checkout Session on each `Upgrade` click
+    and stores the expected success/cancel URLs with the pending session,
+    avoiding stale debug-page redirects.
+    The public Checkout Session status endpoint is not a billing-identity API;
+    it intentionally omits internal account/customer/link fields.
     If `invoice.paid` arrives before `checkout.session.completed` and the server
     cannot resolve the Stripe customer email yet, it stores the invoice under
     `pendingInvoices` and processes it after Checkout completion records the
@@ -54,8 +171,8 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
   - The MVP plan is one Premium subscription at `$35/month`; each `invoice.paid`
     creates one paid batch of 500 claimable tickets and one single-use
     `/?tickets=<code>` link for that batch. `BillingModal` is a
-    full-page-style Premium plan overlay with a top-left back arrow, one Premium
-    plan card, `$35/month · 500 tickets per month`, and `Get Premium Plan`. It
+    compact Premium popup with a close button, one Premium plan card,
+    `$35 / month`, `500 tickets each month`, and `Upgrade`. It
     intentionally omits email, login, logout, entitlement tables, claim counters,
     and privacy explainer copy from the product surface. The MVP still uses a
     temporary email identity under `oa-billing-demo-email` for legacy manual
@@ -65,30 +182,24 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     `accountExists` are treated as usable so older manual claim flows do not
     fail against a still-running pre-account-endpoint server.
     Existing stored real emails load status so active subscriptions show
-    `Manage billing`; after Checkout success the browser briefly retries
-    `/api/billing/checkout-session?session_id=...` to remember the Stripe email
-    locally once the webhook records it. Checkout remains available even when
-    the same browser/email/customer already has an active subscription. Repeated
-    paid checkouts are additive: each paid invoice creates a separate delivery
-    link and a separate ticket batch. Real auth/account UI belongs outside this
-    checkout page.
+    `Manage billing` instead of another Premium checkout. After Checkout success
+    the browser claims by `/api/billing/checkout-session/claim`, remembers the
+    Stripe email locally once the webhook records it, and loads tickets without
+    requiring the user to open email. Without a stored billing email, the app
+    cannot know cross-browser subscription state and starts normal Stripe
+    Checkout.
     Demo account creation does not create a Stripe customer until Checkout
     starts. There is no proration, calendar-month epoch, or first-of-month expiry
     logic. Entitlements track count and `blindTicketsIssued` fulfillment.
     After Stripe/webhook activation, the demo server logs or SMTP-sends an email
     containing `http://localhost:8091/?tickets=<code>`. The query shape is
     intentional because Python's static `http.server` returns 404 for direct app
-    routes like `/tickets/<code>`. The same plan card can
-    still show `Download tickets` when `claimableTickets > 0`, or `Retry ticket
-    download` when a saved pending claim exists, but product delivery is the
-    emailed ticket link. The ticket count appears as one compact line inside the
-    same Premium card (`500 tickets ready`, `500 tickets download pending`, or
-    `500 demo tickets downloaded`) rather than as a separate entitlement/debug
-    table.
-    On localhost only, the card also includes a muted `Reset test billing`
-    control that clears the hidden demo email, pending blinded-claim batch, and
-    demo-only ticket store so a tester can start a fresh Checkout identity. This
-    reset does not cancel or delete anything in Stripe or the demo server store.
+    routes like `/tickets/<code>`. The product Upgrade card does not manually
+    claim entitlement counters; delivery happens through returned Checkout
+    Session claims and ticket-link recovery.
+    The localhost-only `Demo controls` disclosure clears local stored billing
+    email, pending Checkout Session, pending ticket claims, and demo billing
+    tickets; it does not cancel Stripe or modify server-side subscription state.
     If SMTP is configured but fails or times out, the demo server prints the same
     ticket-link email to the terminal as a fallback so the link is not lost. A
     `console-fallback` delivery can be retried for the same invoice/link after
@@ -118,12 +229,13 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     Ticket-link claims spend only the entitlement ID created for that link's
     invoice. Manual/debug `/api/tickets/claim` ignores entitlements that already
     have delivery links, so a claim for one purchase cannot drain a different
-    purchase's link batch. Ticket-link idempotency is scoped by link code and
-    entitlement ID, so adversarially reusing the same blinded request batch
-    across two paid links cannot collide in the demo server claim store.
-    The product card intentionally keeps
-    manual claiming as one button instead of showing entitlement tables or claim
-    counters. The local demo server declares `ticket_mode: "demo"`, so fake
+    purchase's link batch. New ticket-link idempotency is scoped by link code,
+    entitlement ID, and blinded request batch without including purchaser email,
+    so adversarially reusing the same blinded request batch across two paid
+    links cannot collide in the demo server claim store or use `claim_id` as an
+    offline email oracle. Legacy email-based claim IDs are accepted only to
+    replay local links that were already marked claimed before this hardening.
+    The local demo server declares `ticket_mode: "demo"`, so fake
     finalized tickets are stored under `oa-billing-demo-finalized-tickets`
     instead of importing them into production
     `inference_tickets`; `ticketStore` rejects demo billing exports, drops
@@ -141,8 +253,9 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     `/api/ticket-links/:code/claim`; ticket-link pending claims use a
     `ticket-link:<code>` key. They fail closed if browser storage cannot
     round-trip the pending batch. The server records a deterministic claim for
-    the email plus blinded request batch, scoped by link code and entitlement ID
-    for subscription links, and replays the same signed responses when the
+    the email plus blinded request batch for manual email claims; subscription
+    links use link code plus entitlement ID plus blinded request batch, omitting
+    purchaser email. The server replays the same signed responses when the
     browser retries that saved batch, so a lost HTTP response does not
     require spending a new entitlement. The product flow clears the pending claim
     only after the JSON download starts and demo local ticket storage round-trips

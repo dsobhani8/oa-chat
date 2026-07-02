@@ -6,6 +6,7 @@ import {
     default as billingClient,
     getMissingStripeConfig,
     isBillingEmailValid,
+    normalizeBillingAccountId,
     normalizeBillingEmail
 } from '../../chat/services/billingClient.js';
 
@@ -47,6 +48,118 @@ test('billing email normalization is conservative', () => {
     assert.equal(normalizeBillingEmail('  Alice@Example.COM  '), 'alice@example.com');
     assert.equal(isBillingEmailValid('alice@example.com'), true);
     assert.equal(isBillingEmailValid('not-an-email'), false);
+});
+
+test('billing account checkout calls account-bound product endpoints', async () => {
+    const calls = [];
+    const restoreFetch = installFetchMock(async (url, options = {}) => {
+        const method = options.method || 'GET';
+        const body = options.body ? JSON.parse(options.body) : null;
+        calls.push({ method, path: url.pathname, search: url.search, body });
+        return jsonResponse({ url: 'https://checkout.stripe.test/session' });
+    });
+
+    try {
+        assert.equal(normalizeBillingAccountId(' 1234 5678 '), '12345678');
+        await billingClient.getAccountStatus(' 1234 5678 ');
+        await billingClient.checkoutSubscriptionForAccount(' 1234 5678 ');
+        await billingClient.checkoutTopupForAccount(' 1234 5678 ');
+        await billingClient.portalForAccount(' 1234 5678 ');
+
+        assert.deepEqual(calls.map(call => `${call.method} ${call.path}${call.search}`), [
+            'GET /api/billing/status?account_id=12345678',
+            'POST /api/billing/checkout-subscription',
+            'POST /api/billing/checkout-topup',
+            'POST /api/billing/portal'
+        ]);
+        assert.deepEqual(calls.slice(1).map(call => call.body), [
+            { account_id: '12345678' },
+            { account_id: '12345678' },
+            { account_id: '12345678' }
+        ]);
+    } finally {
+        restoreFetch();
+    }
+});
+
+test('billing current account calls use local account session header without body account ids', async () => {
+    const calls = [];
+    const restoreFetch = installFetchMock(async (url, options = {}) => {
+        const method = options.method || 'GET';
+        const body = options.body ? JSON.parse(options.body) : null;
+        calls.push({
+            method,
+            path: url.pathname,
+            search: url.search,
+            body,
+            accountHeader: options.headers?.['X-OA-Demo-Account-ID']
+        });
+        if (url.pathname === '/api/billing/tickets/claim') {
+            return jsonResponse({
+                ticket_mode: 'demo',
+                signed_blinded_responses: [{ index: 0, signed_blinded_response: 'signed-one' }],
+                status: { claimableTickets: 0 }
+            });
+        }
+        return jsonResponse({ url: 'https://checkout.stripe.test/session' });
+    });
+
+    try {
+        await billingClient.getCurrentAccountStatus(' 1234 5678 ');
+        await billingClient.checkoutForCurrentAccount(' 1234 5678 ');
+        await billingClient.portalForCurrentAccount(' 1234 5678 ');
+        await billingClient.claimCurrentAccountTickets(' 1234 5678 ', ['blind-one']);
+
+        assert.deepEqual(calls.map(call => `${call.method} ${call.path}${call.search}`), [
+            'GET /api/billing/status',
+            'POST /api/billing/checkout',
+            'POST /api/billing/portal',
+            'POST /api/billing/tickets/claim'
+        ]);
+        assert.deepEqual(calls.map(call => call.accountHeader), [
+            '12345678',
+            '12345678',
+            '12345678',
+            '12345678'
+        ]);
+        assert.deepEqual(calls.map(call => call.body), [
+            null,
+            {},
+            {},
+            { blinded_requests: ['blind-one'] }
+        ]);
+    } finally {
+        restoreFetch();
+    }
+});
+
+test('billing client supports email top-up and checkout-session claims', async () => {
+    const calls = [];
+    const restoreFetch = installFetchMock(async (url, options = {}) => {
+        const method = options.method || 'GET';
+        const body = options.body ? JSON.parse(options.body) : null;
+        calls.push({ method, path: url.pathname, search: url.search, body });
+        if (url.pathname === '/api/billing/checkout-session/claim') {
+            return jsonResponse({ pending: true });
+        }
+        return jsonResponse({ url: 'https://checkout.stripe.test/session' });
+    });
+
+    try {
+        await billingClient.checkoutTopup(' Alice@Example.COM ');
+        await billingClient.claimCheckoutSession(' cs_test_123 ', ['blind-one']);
+
+        assert.deepEqual(calls.map(call => `${call.method} ${call.path}${call.search}`), [
+            'POST /api/billing/topup',
+            'POST /api/billing/checkout-session/claim'
+        ]);
+        assert.deepEqual(calls.map(call => call.body), [
+            { email: 'alice@example.com' },
+            { session_id: 'cs_test_123', blinded_requests: ['blind-one'] }
+        ]);
+    } finally {
+        restoreFetch();
+    }
 });
 
 test('billing client stores and clears hidden demo account email', () => {
@@ -223,10 +336,125 @@ test('demo billing claims finalize into ticket export payloads in the browser', 
     assert.equal(result.payload.source.mode, 'demo');
     assert.deepEqual(result.payload.data.tickets.archived, []);
     assert.equal(result.payload.data.tickets.active.length, 1);
-    assert.equal(result.payload.data.tickets.active[0].source, 'stripe-billing-demo');
     assert.match(result.payload.data.tickets.active[0].finalized_ticket, /^demo_/);
-    assert.equal(result.payload.data.tickets.active[0].billing_entitlement_id, 'entitlement-one');
-    assert.equal(result.payload.data.tickets.active[0].billing_plan_id, 'premium');
+    assert.equal(result.payload.data.tickets.active[0].source, undefined);
+    assert.equal(result.payload.data.tickets.active[0].billing_entitlement_id, undefined);
+    assert.equal(result.payload.data.tickets.active[0].billing_plan_id, undefined);
+    assert.equal(result.payload.data.tickets.active[0].billing_invoice_id, undefined);
+});
+
+test('billing client redeems current account entitlements into local demo tickets', async () => {
+    const restoreStorage = installLocalStorageMock();
+    const downloads = [];
+    const restoreDownload = installDownloadMock(downloads);
+    const calls = [];
+    const restoreFetch = installFetchMock(async (url, options = {}) => {
+        const method = options.method || 'GET';
+        const body = options.body ? JSON.parse(options.body) : null;
+        calls.push({
+            method,
+            path: url.pathname,
+            body,
+            accountHeader: options.headers?.['X-OA-Demo-Account-ID']
+        });
+
+        if (method === 'GET' && url.pathname === '/api/billing/status') {
+            return jsonResponse({
+                accountId: '12345678',
+                subscription: { status: 'active' },
+                claimableTickets: 4,
+                unclaimedTickets: 4,
+                nextClaimableTickets: 2
+            });
+        }
+        if (method === 'POST' && url.pathname === '/api/billing/tickets/claim') {
+            assert.equal(body.account_id, undefined);
+            assert.equal(body.email, undefined);
+            assert.equal(body.blinded_requests.length, 2);
+            return jsonResponse({
+                ticket_mode: 'demo',
+                signed_blinded_responses: [
+                    { index: 0, signed_blinded_response: 'signed-one' },
+                    { index: 1, signed_blinded_response: 'signed-two' }
+                ],
+                status: {
+                    accountId: '12345678',
+                    subscription: { status: 'active' },
+                    claimableTickets: 0,
+                    unclaimedTickets: 0
+                }
+            });
+        }
+        return jsonResponse({ error: 'unexpected request' }, false, 404);
+    });
+
+    try {
+        const result = await billingClient.redeemCurrentAccountTickets('1234 5678');
+
+        assert.equal(result.tickets.length, 2);
+        assert.equal(billingClient.getDemoTicketCount(), 2);
+        assert.equal(billingClient.getPendingAccountTicketClaim('12345678'), null);
+        assert.equal(downloads.length, 1);
+        assert.deepEqual(calls.map(call => `${call.method} ${call.path}`), [
+            'GET /api/billing/status',
+            'POST /api/billing/tickets/claim'
+        ]);
+        assert.deepEqual(calls.map(call => call.accountHeader), ['12345678', '12345678']);
+    } finally {
+        restoreFetch();
+        restoreDownload();
+        restoreStorage();
+    }
+});
+
+test('billing client aborts current account ticket writes after local reset', async () => {
+    const restoreStorage = installLocalStorageMock();
+    const downloads = [];
+    const restoreDownload = installDownloadMock(downloads);
+    const restoreFetch = installFetchMock(async (url, options = {}) => {
+        const method = options.method || 'GET';
+        const body = options.body ? JSON.parse(options.body) : null;
+        if (method === 'POST' && url.pathname === '/api/billing/tickets/claim') {
+            assert.equal(body.blinded_requests.length, 2);
+            return jsonResponse({
+                ticket_mode: 'demo',
+                signed_blinded_responses: [
+                    { index: 0, signed_blinded_response: 'signed-one' },
+                    { index: 1, signed_blinded_response: 'signed-two' }
+                ],
+                status: {
+                    accountId: '12345678',
+                    subscription: { status: 'active' },
+                    claimableTickets: 0,
+                    unclaimedTickets: 0,
+                    nextClaimableTickets: 0
+                }
+            });
+        }
+        return jsonResponse({ error: 'unexpected request' }, false, 404);
+    });
+
+    try {
+        await assert.rejects(
+            () => billingClient.redeemCurrentAccountTickets('1234 5678', {
+                status: {
+                    accountId: '12345678',
+                    subscription: { status: 'active' },
+                    claimableTickets: 2,
+                    unclaimedTickets: 2,
+                    nextClaimableTickets: 2
+                },
+                shouldAbort: () => true
+            }),
+            /cancelled/
+        );
+        assert.equal(billingClient.getDemoTicketCount(), 0);
+        assert.equal(downloads.length, 0);
+    } finally {
+        restoreFetch();
+        restoreDownload();
+        restoreStorage();
+    }
 });
 
 test('billing client redeems subscription ticket links into demo ticket JSON', async () => {
@@ -280,6 +508,74 @@ test('billing client redeems subscription ticket links into demo ticket JSON', a
         assert.deepEqual(calls.map(call => `${call.method} ${call.path}`), [
             'GET /api/ticket-links/abc123',
             'POST /api/ticket-links/abc123/claim'
+        ]);
+    } finally {
+        restoreFetch();
+        restoreDownload();
+        restoreStorage();
+    }
+});
+
+test('billing client stores checkout email only after session claim succeeds', async () => {
+    const restoreStorage = installLocalStorageMock();
+    const downloads = [];
+    const restoreDownload = installDownloadMock(downloads);
+    const calls = [];
+    const restoreFetch = installFetchMock(async (url, options = {}) => {
+        const method = options.method || 'GET';
+        const body = options.body ? JSON.parse(options.body) : null;
+        calls.push({ method, path: url.pathname, search: url.search, body });
+
+        if (method === 'GET' && url.pathname === '/api/billing/checkout-session') {
+            assert.equal(url.searchParams.get('session_id'), 'cs_test_session');
+            return jsonResponse({
+                sessionId: 'cs_test_session',
+                status: 'completed',
+                checkoutType: 'subscription',
+                ticketCount: 2
+            });
+        }
+        if (method === 'POST' && url.pathname === '/api/billing/checkout-session/claim') {
+            assert.equal(body.session_id, 'cs_test_session');
+            assert.equal(body.blinded_requests.length, 2);
+            return jsonResponse({
+                ticket_mode: 'demo',
+                ticket_link: undefined,
+                session: {
+                    sessionId: 'cs_test_session',
+                    status: 'completed',
+                    checkoutType: 'subscription',
+                    email: 'buyer@example.com',
+                    billingEmail: 'buyer@example.com',
+                    ticketCount: 2
+                },
+                signed_blinded_responses: [
+                    { index: 0, signed_blinded_response: 'signed-one' },
+                    { index: 1, signed_blinded_response: 'signed-two' }
+                ],
+                allocations: [{
+                    ticketsIssued: 2,
+                    entitlementId: 'entitlement-one',
+                    planId: 'premium',
+                    planName: 'Premium',
+                    stripeInvoiceId: 'in_test'
+                }]
+            });
+        }
+        return jsonResponse({ error: 'unexpected request' }, false, 404);
+    });
+
+    try {
+        const result = await billingClient.redeemCheckoutSession('cs_test_session');
+
+        assert.equal(result.tickets.length, 2);
+        assert.equal(result.session.email, 'buyer@example.com');
+        assert.equal(billingClient.getStoredEmail(), 'buyer@example.com');
+        assert.equal(billingClient.getDemoTicketCount(), 2);
+        assert.equal(downloads.length, 1);
+        assert.deepEqual(calls.map(call => `${call.method} ${call.path}${call.search}`), [
+            'GET /api/billing/checkout-session?session_id=cs_test_session',
+            'POST /api/billing/checkout-session/claim'
         ]);
     } finally {
         restoreFetch();
