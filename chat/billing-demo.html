@@ -711,9 +711,17 @@
     </main>
 
     <script type="module">
+        const PREVIEW_API_BASE = 'https://oa-chat.onrender.com';
+        const LOCAL_API_BASE = 'http://localhost:4242';
+        const PREVIEW_HOST_PATTERN = /^oa-chat-git-stripe-subscription-mvp-[a-z0-9-]+\.vercel\.app$/i;
+        function getDefaultApiBase() {
+            return PREVIEW_HOST_PATTERN.test(window.location.hostname)
+                ? PREVIEW_API_BASE
+                : LOCAL_API_BASE;
+        }
         const API_BASE = localStorage.getItem('oa-billing-api-base') ||
             localStorage.getItem('oa-billing-demo-api-base') ||
-            'http://localhost:4242';
+            getDefaultApiBase();
         const EMAIL_KEY = 'oa-billing-demo-email';
         const DEMO_TICKET_KEY = 'oa-billing-demo-finalized-tickets';
         const PENDING_CLAIM_KEY = 'oa-billing-pending-ticket-claim';

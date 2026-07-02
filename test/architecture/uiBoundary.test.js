@@ -897,6 +897,8 @@ test('billing client and demo server support hidden demo accounts', () => {
     assert.equal(debugPage.includes('async function ensureAccountExists(email)'), true);
     assert.equal(debugPage.includes("await post('/api/billing/account', { email });"), true);
     assert.equal(debugPage.includes('await ensureAccountExists(email);'), true);
+    assert.equal(debugPage.includes("const PREVIEW_API_BASE = 'https://oa-chat.onrender.com';"), true);
+    assert.equal(debugPage.includes('PREVIEW_HOST_PATTERN.test(window.location.hostname)'), true);
 });
 
 test('account modal exposes scoped billing demo account bypass', async () => {

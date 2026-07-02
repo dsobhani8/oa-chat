@@ -45,6 +45,12 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     verified demo account through `X-OA-Demo-Account-ID` as a stand-in for the
     future production session cookie; request bodies do not carry `account_id`
     as proof. Existing email/account-id endpoints remain debug scaffolding.
+    `billingClient` defaults local hosts to `http://localhost:4242`; the scoped
+    Stripe MVP Vercel preview host
+    `oa-chat-git-stripe-subscription-mvp-*.vercel.app` defaults to the shared
+    Render demo backend at `https://oa-chat.onrender.com`. A
+    `window.OA_BILLING_API_BASE` or `oa-billing-api-base` localStorage override
+    still wins for custom backend testing.
   - Account billing syncs only Premium state, Stripe customer mapping, portal
     availability, and unclaimed paid ticket batches. Any signed-in browser with
     the same account can see `Premium active` and claim an unclaimed monthly

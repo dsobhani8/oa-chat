@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     buildTicketExportPayload,
     default as billingClient,
+    getDefaultBillingApiBaseForHostname,
     getMissingStripeConfig,
     isBillingEmailValid,
     normalizeBillingAccountId,
@@ -48,6 +49,42 @@ test('billing email normalization is conservative', () => {
     assert.equal(normalizeBillingEmail('  Alice@Example.COM  '), 'alice@example.com');
     assert.equal(isBillingEmailValid('alice@example.com'), true);
     assert.equal(isBillingEmailValid('not-an-email'), false);
+});
+
+test('billing client defaults shared Stripe MVP preview to Render backend', () => {
+    assert.equal(
+        getDefaultBillingApiBaseForHostname('oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app'),
+        'https://oa-chat.onrender.com'
+    );
+    assert.equal(
+        getDefaultBillingApiBaseForHostname('OA-CHAT-GIT-STRIPE-SUBSCRIPTION-MVP-DOMINIC-S-S-PROJECTS.VERCEL.APP'),
+        'https://oa-chat.onrender.com'
+    );
+    assert.equal(getDefaultBillingApiBaseForHostname('localhost'), 'http://localhost:4242');
+    assert.equal(getDefaultBillingApiBaseForHostname('oa-chat-git-council-mode-mvp-dominic-s-s-projects.vercel.app'), 'http://localhost:4242');
+    assert.equal(getDefaultBillingApiBaseForHostname('oa-chat.onrender.com'), 'http://localhost:4242');
+    assert.equal(
+        getDefaultBillingApiBaseForHostname('oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app.evil.com'),
+        'http://localhost:4242'
+    );
+});
+
+test('billing client api base keeps explicit overrides before hostname defaults', () => {
+    const restoreWindow = installWindowMock('oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app');
+    const restoreStorage = installLocalStorageMock();
+
+    try {
+        assert.equal(billingClient.getApiBase(), 'https://oa-chat.onrender.com');
+        localStorage.setItem('oa-billing-api-base', 'https://custom-billing.example.com///');
+        assert.equal(billingClient.getApiBase(), 'https://custom-billing.example.com');
+
+        localStorage.removeItem('oa-billing-api-base');
+        window.OA_BILLING_API_BASE = 'https://window-billing.example.com///';
+        assert.equal(billingClient.getApiBase(), 'https://window-billing.example.com');
+    } finally {
+        restoreStorage();
+        restoreWindow();
+    }
 });
 
 test('billing account checkout calls account-bound product endpoints', async () => {
@@ -765,6 +802,21 @@ function installLocalStorageMock(options = {}) {
             delete globalThis.localStorage;
         } else {
             globalThis.localStorage = original;
+        }
+    };
+}
+
+function installWindowMock(hostname) {
+    const original = globalThis.window;
+    globalThis.window = {
+        location: { hostname }
+    };
+
+    return () => {
+        if (original === undefined) {
+            delete globalThis.window;
+        } else {
+            globalThis.window = original;
         }
     };
 }

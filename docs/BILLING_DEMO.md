@@ -204,8 +204,12 @@ The standalone page remains available for backend debugging only:
 http://localhost:8091/billing-demo.html
 ```
 
-The app and debug page default to `http://localhost:4242` for the billing
-server. If you change `BILLING_SERVER_PORT`, set a matching browser override:
+The app and debug page default to `http://localhost:4242` for local billing.
+The scoped Stripe MVP Vercel preview
+(`oa-chat-git-stripe-subscription-mvp-*.vercel.app`) defaults to the shared
+Render backend at `https://oa-chat.onrender.com`, so collaborators do not need
+a console override. If you change `BILLING_SERVER_PORT` locally, or need to test
+another backend, set a matching browser override:
 
 ```js
 localStorage.setItem('oa-billing-api-base', 'http://localhost:YOUR_PORT')
@@ -214,9 +218,10 @@ localStorage.setItem('oa-billing-api-base', 'http://localhost:YOUR_PORT')
 For local development, keep the demo billing server bound to localhost. For a
 short-lived shared demo, it may be deployed as a Render web service with Stripe
 test-mode keys, `BILLING_SERVER_HOST=0.0.0.0`, a persistent demo store, and the
-Vercel preview frontend pointed at that backend. Do not treat that as production
-auth: the demo account ID is the billing identity proof, and legacy email/debug
-endpoints still use permissive CORS for browser testing.
+scoped Stripe MVP Vercel preview frontend pointed at that backend by default.
+Do not treat that as production auth: the demo account ID is the billing
+identity proof, and legacy email/debug endpoints still use permissive CORS for
+browser testing.
 
 Use Stripe's test card:
 

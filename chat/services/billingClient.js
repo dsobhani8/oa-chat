@@ -1,4 +1,6 @@
-const DEFAULT_BILLING_API_BASE = 'http://localhost:4242';
+const LOCAL_BILLING_API_BASE = 'http://localhost:4242';
+const STRIPE_SUBSCRIPTION_DEMO_PREVIEW_BILLING_API_BASE = 'https://oa-chat.onrender.com';
+const STRIPE_SUBSCRIPTION_DEMO_PREVIEW_HOST_PATTERN = /^oa-chat-git-stripe-subscription-mvp-[a-z0-9-]+\.vercel\.app$/i;
 const API_BASE_KEY = 'oa-billing-api-base';
 const LEGACY_API_BASE_KEY = 'oa-billing-demo-api-base';
 const EMAIL_KEY = 'oa-billing-demo-email';
@@ -31,6 +33,14 @@ export function normalizeBillingEmail(value) {
 
 export function normalizeBillingAccountId(value) {
     return typeof value === 'string' ? value.trim().replace(/\s+/g, '') : '';
+}
+
+export function getDefaultBillingApiBaseForHostname(hostname) {
+    const normalized = typeof hostname === 'string' ? hostname.trim().toLowerCase() : '';
+    if (STRIPE_SUBSCRIPTION_DEMO_PREVIEW_HOST_PATTERN.test(normalized)) {
+        return STRIPE_SUBSCRIPTION_DEMO_PREVIEW_BILLING_API_BASE;
+    }
+    return LOCAL_BILLING_API_BASE;
 }
 
 export function isBillingEmailValid(value) {
@@ -101,7 +111,8 @@ class BillingClient {
             // Local storage can be unavailable in hardened browser modes.
         }
 
-        return DEFAULT_BILLING_API_BASE;
+        const hostname = typeof window !== 'undefined' ? window.location?.hostname : '';
+        return getDefaultBillingApiBaseForHostname(hostname);
     }
 
     getStoredEmail() {
