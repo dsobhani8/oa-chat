@@ -10,9 +10,9 @@ import path from 'node:path';
 
 const WEBHOOK_SECRET = 'whsec_localtest';
 const PRICE_ID = 'price_localtest';
-const TOPUP_PRICE_ID = 'price_topup_localtest';
 
 test('billing demo server scopes subscription ticket claims per link', { timeout: 10000 }, async (t) => {
+    const accountId = '1234567890123456';
     const { baseUrl, storePath } = await startBillingDemoServer(t);
 
     await postSignedWebhook(baseUrl, buildInvoicePaidEvent({
@@ -21,6 +21,7 @@ test('billing demo server scopes subscription ticket claims per link', { timeout
         lineId: 'il_link_scope_one',
         customerId: 'cus_link_scope',
         email: 'buyer@example.com',
+        accountId,
         created: 1700000001
     }));
     await postSignedWebhook(baseUrl, buildInvoicePaidEvent({
@@ -29,6 +30,7 @@ test('billing demo server scopes subscription ticket claims per link', { timeout
         lineId: 'il_link_scope_two',
         customerId: 'cus_link_scope',
         email: 'buyer@example.com',
+        accountId,
         created: 1700000002
     }));
 
@@ -69,77 +71,8 @@ test('billing demo server scopes subscription ticket claims per link', { timeout
     assert.equal(finalStore.ticketLinks[secondLink.code].claimId, secondClaim.claim_id);
 });
 
-test('billing demo server replays legacy link claims and rejects different batches', { timeout: 10000 }, async (t) => {
-    const email = 'buyer@example.com';
-    const code = 'abc123abc123abc123abc123';
-    const blindedRequests = ['legacy-blind-one', 'legacy-blind-two'];
-    const legacyClaimId = buildLegacyClaimId(email, blindedRequests);
-    const initialStore = buildStore({
-        customers: {
-            [email]: {
-                email,
-                userId: 'user-one',
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        },
-        claims: {
-            [legacyClaimId]: {
-                id: legacyClaimId,
-                email,
-                requestCount: blindedRequests.length,
-                signedBlindedResponses: [
-                    { index: 0, signed_blinded_response: 'legacy-signed-one' },
-                    { index: 1, signed_blinded_response: 'legacy-signed-two' }
-                ],
-                ticketsIssued: blindedRequests.length,
-                ticketMode: 'demo',
-                ticketLinkCode: code,
-                allocations: [{
-                    entitlementId: 'entitlement-legacy',
-                    ticketsIssued: blindedRequests.length
-                }],
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        },
-        ticketLinks: {
-            [code]: {
-                code,
-                email,
-                userId: 'user-one',
-                entitlementId: 'entitlement-legacy',
-                sourceType: 'subscription',
-                planId: 'premium',
-                planName: 'Premium',
-                ticketCount: blindedRequests.length,
-                ticketMode: 'demo',
-                stripeInvoiceId: 'in_legacy',
-                status: 'claimed',
-                claimId: legacyClaimId,
-                claimedAt: '2026-07-01T00:00:00.000Z',
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        }
-    });
-    const { baseUrl } = await startBillingDemoServer(t, {}, initialStore);
-
-    const replay = await postJson(
-        `${baseUrl}/api/ticket-links/${code}/claim`,
-        { blinded_requests: blindedRequests }
-    );
-    assert.equal(replay.replayed, true);
-    assert.equal(replay.claim_id, legacyClaimId);
-
-    const rejected = await fetch(`${baseUrl}/api/ticket-links/${code}/claim`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ blinded_requests: ['different-one', 'different-two'] })
-    });
-    const data = await rejected.json();
-    assert.equal(rejected.status, 409, JSON.stringify(data));
-    assert.match(data.error, /already been redeemed/);
-});
-
 test('billing demo server retries console-fallback delivery for duplicate paid invoices', { timeout: 10000 }, async (t) => {
+    const accountId = '1234567890123456';
     const closedSmtpPort = await getAvailablePort();
     const { baseUrl, storePath } = await startBillingDemoServer(t, {
         SMTP_HOST: '127.0.0.1',
@@ -152,6 +85,7 @@ test('billing demo server retries console-fallback delivery for duplicate paid i
         lineId: 'il_smtp_retry',
         customerId: 'cus_smtp_retry',
         email: 'buyer@example.com',
+        accountId,
         created: 1700000003
     });
 
@@ -170,6 +104,58 @@ test('billing demo server retries console-fallback delivery for duplicate paid i
     link = Object.values(store.ticketLinks)[0];
     assert.equal(link.deliveryMethod, 'console-fallback');
     assert.equal(link.deliveryAttempts, 2);
+});
+
+test('billing demo server defers paid invoices without an OA account mapping', { timeout: 10000 }, async (t) => {
+    const { baseUrl, storePath } = await startBillingDemoServer(t);
+    const result = await postSignedWebhook(baseUrl, buildInvoicePaidEvent({
+        eventId: 'evt_missing_account',
+        invoiceId: 'in_missing_account',
+        lineId: 'il_missing_account',
+        customerId: 'cus_missing_account',
+        email: 'buyer@example.com',
+        created: 1700000004
+    }));
+
+    assert.equal(result.deferred, true);
+    const store = await readStore(storePath);
+    assert.equal(Object.keys(store.entitlements).length, 0);
+    assert.equal(Object.keys(store.ticketLinks).length, 0);
+    assert.equal(Object.keys(store.pendingInvoices).length, 1);
+    assert.equal(store.pendingInvoices.in_missing_account.accountId, '');
+});
+
+test('billing demo server creates account entitlements without billing email', { timeout: 10000 }, async (t) => {
+    const accountId = '1234567890123456';
+    const { baseUrl, storePath } = await startBillingDemoServer(t);
+
+    await postSignedWebhook(baseUrl, buildInvoicePaidEvent({
+        eventId: 'evt_account_without_email',
+        invoiceId: 'in_account_without_email',
+        lineId: 'il_account_without_email',
+        customerId: 'cus_account_without_email',
+        email: '',
+        accountId,
+        created: 1700000005
+    }));
+
+    const store = await readStore(storePath);
+    const entitlement = Object.values(store.entitlements)[0];
+    const link = Object.values(store.ticketLinks)[0];
+    assert.equal(entitlement.accountId, accountId);
+    assert.equal(entitlement.email, null);
+    assert.equal(link.accountId, accountId);
+    assert.equal(link.email, null);
+    assert.equal(link.deliveryMethod, 'console');
+
+    const statusResponse = await fetch(`${baseUrl}/api/billing/status`, {
+        headers: { 'X-OA-Demo-Account-ID': accountId }
+    });
+    const status = await statusResponse.json();
+    assert.equal(statusResponse.status, 200, JSON.stringify(status));
+    assert.equal(status.billingEmail, null);
+    assert.equal(status.subscription.status, 'active');
+    assert.equal(status.claimableTickets, 500);
 });
 
 test('billing demo server binds Premium subscription status to account ids', { timeout: 10000 }, async (t) => {
@@ -412,6 +398,10 @@ test('billing demo renewal is not created by query account debug status', { time
     const statusResponse = await fetch(`${baseUrl}/api/billing/status?account_id=${accountId}`);
     const status = await statusResponse.json();
     assert.equal(statusResponse.status, 200, JSON.stringify(status));
+    assert.equal(status.billingEmail, undefined);
+    assert.equal(status.stripeCustomerId, undefined);
+    assert.equal(status.subscription?.id, undefined);
+    assert.equal(status.entitlements.some(entitlement => entitlement.id !== undefined), false);
     assert.equal(status.claimableTickets, 0);
     assert.equal(status.nextClaimableTickets, 0);
 
@@ -703,36 +693,31 @@ test('billing demo incomplete exact account claim id does not shadow entitlement
     assert.equal(store.claims[exactClaimId].signedBlindedResponses.length, 2);
 });
 
-test('billing demo server blocks duplicate email subscriptions', { timeout: 10000 }, async (t) => {
-    const email = 'buyer@example.com';
-    const initialStore = buildStore({
-        customers: {
-            [email]: {
-                email,
-                userId: 'user-duplicate-email',
-                stripeCustomerId: 'cus_duplicate_email',
-                subscription: {
-                    id: 'sub_duplicate_email',
-                    status: 'active',
-                    updatedAt: '2026-07-01T00:00:00.000Z',
-                    stripeEventCreated: 1700000180
-                },
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        }
-    });
-    const { baseUrl } = await startBillingDemoServer(t, {}, initialStore);
+test('billing demo server requires account session for product billing routes', { timeout: 10000 }, async (t) => {
+    const { baseUrl } = await startBillingDemoServer(t);
 
-    const response = await fetch(`${baseUrl}/api/billing/checkout`, {
+    const checkoutResponse = await fetch(`${baseUrl}/api/billing/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email: 'buyer@example.com' })
     });
-    const data = await response.json();
-    assert.equal(response.status, 200, JSON.stringify(data));
-    assert.equal(data.alreadySubscribed, true);
-    assert.equal(data.status.subscription.status, 'active');
-    assert.equal(data.url, undefined);
+    const checkout = await checkoutResponse.json();
+    assert.equal(checkoutResponse.status, 401, JSON.stringify(checkout));
+    assert.match(checkout.error, /Account session is required/);
+
+    const portalResponse = await fetch(`${baseUrl}/api/billing/portal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'buyer@example.com' })
+    });
+    const portal = await portalResponse.json();
+    assert.equal(portalResponse.status, 401, JSON.stringify(portal));
+    assert.match(portal.error, /Account session is required/);
+
+    const statusResponse = await fetch(`${baseUrl}/api/billing/status?email=buyer@example.com`);
+    const status = await statusResponse.json();
+    assert.equal(statusResponse.status, 401, JSON.stringify(status));
+    assert.match(status.error, /Account session is required/);
 });
 
 test('billing demo server reuses pending account subscription checkout sessions', { timeout: 10000 }, async (t) => {
@@ -803,149 +788,8 @@ test('billing demo server serializes concurrent account subscription checkout cr
     assert.equal(store.accounts[accountId].pendingCheckout.sessionId, 'cs_mock_checkout_1');
 });
 
-test('billing demo server creates 100-ticket top-up links for Premium accounts', { timeout: 10000 }, async (t) => {
-    const accountId = '1234567890123456';
-    const storePath = buildStorePath();
-    const initialStore = buildStore();
-    initialStore.accounts[accountId] = {
-        accountId,
-        billingEmail: 'buyer@example.com',
-        stripeCustomerId: 'cus_topup_account',
-        subscription: {
-            id: 'sub_topup_account',
-            status: 'active',
-            cancelAtPeriodEnd: false,
-            updatedAt: '2026-07-01T00:00:00.000Z',
-            stripeEventCreated: 1700000199
-        },
-        createdAt: '2026-07-01T00:00:00.000Z'
-    };
-    initialStore.checkoutSessions.cs_topup_completed = {
-        sessionId: 'cs_topup_completed',
-        accountId,
-        checkoutType: 'topup',
-        mode: 'payment',
-        priceId: TOPUP_PRICE_ID,
-        ticketCount: 100,
-        status: 'created',
-        createdAt: '2026-07-01T00:00:00.000Z'
-    };
-    await fs.writeFile(storePath, `${JSON.stringify(initialStore, null, 2)}\n`);
-
-    const { baseUrl } = await startBillingDemoServer(t, {
-        STRIPE_TOPUP_100_PRICE_ID: TOPUP_PRICE_ID,
-        BILLING_DEMO_STORE: storePath
-    });
-
-    await postSignedWebhook(baseUrl, buildCheckoutSessionCompletedEvent({
-        eventId: 'evt_topup_completed',
-        sessionId: 'cs_topup_completed',
-        customerId: 'cus_topup_account',
-        email: 'buyer@example.com',
-        accountId,
-        created: 1700000201
-    }));
-
-    const store = await readStore(storePath);
-    const links = Object.values(store.ticketLinks);
-    assert.equal(links.length, 1);
-    const topupLink = links.find(link => link.sourceType === 'topup');
-    assert.equal(topupLink.accountId, accountId);
-    assert.equal(topupLink.ticketCount, 100);
-    assert.equal(topupLink.stripeCheckoutSessionId, 'cs_topup_completed');
-
-    const sessionResponse = await fetch(`${baseUrl}/api/billing/checkout-session?session_id=cs_topup_completed`);
-    const sessionData = await sessionResponse.json();
-    assert.equal(sessionResponse.status, 200, JSON.stringify(sessionData));
-    assert.equal(sessionData.checkoutType, 'topup');
-    assert.equal(sessionData.ticketCount, 100);
-    assert.equal(sessionData.accountId, undefined);
-    assert.equal(sessionData.email, undefined);
-    assert.equal(sessionData.billingEmail, undefined);
-    assert.equal(sessionData.stripeCustomerId, undefined);
-    assert.equal(sessionData.ticketLinkCode, undefined);
-
-    const blindedRequests = Array.from({ length: 100 }, (_, index) => `topup-blinded-${index}`);
-    const claim = await postJson(
-        `${baseUrl}/api/ticket-links/${topupLink.code}/claim`,
-        { blinded_requests: blindedRequests }
-    );
-    assert.equal(claim.tickets_issued, 100);
-    assert.equal(claim.allocations[0].entitlementId, topupLink.entitlementId);
-    assert.equal(claim.session, undefined);
-});
-
-test('billing demo server claims paid checkout sessions directly', { timeout: 10000 }, async (t) => {
-    const email = 'buyer@example.com';
-    const sessionId = 'cs_direct_subscription';
-    const initialStore = buildStore({
-        customers: {
-            [email]: {
-                email,
-                userId: 'user-direct',
-                stripeCustomerId: 'cus_direct_subscription',
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        },
-        checkoutSessions: {
-            [sessionId]: {
-                sessionId,
-                email,
-                billingEmail: email,
-                stripeCustomerId: 'cus_direct_subscription',
-                stripeSubscriptionId: 'sub_direct_subscription',
-                checkoutType: 'subscription',
-                mode: 'subscription',
-                priceId: PRICE_ID,
-                ticketCount: 500,
-                status: 'completed',
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        }
-    });
-    const { baseUrl, storePath } = await startBillingDemoServer(t, {}, initialStore);
-    const blindedRequests = Array.from({ length: 500 }, (_, index) => `direct-subscription-blinded-${index}`);
-
-    const pendingResponse = await fetch(`${baseUrl}/api/billing/checkout-session/claim`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, blinded_requests: blindedRequests })
-    });
-    const pending = await pendingResponse.json();
-    assert.equal(pendingResponse.status, 202, JSON.stringify(pending));
-    assert.equal(pending.pending, true);
-    assert.equal(pending.session.email, undefined);
-    assert.equal(pending.session.billingEmail, undefined);
-    assert.equal(pending.session.stripeCustomerId, undefined);
-    assert.equal(pending.session.ticketLinkCode, undefined);
-
-    await postSignedWebhook(baseUrl, buildInvoicePaidEvent({
-        eventId: 'evt_direct_subscription',
-        invoiceId: 'in_direct_subscription',
-        lineId: 'il_direct_subscription',
-        customerId: 'cus_direct_subscription',
-        email,
-        subscriptionId: 'sub_direct_subscription',
-        created: 1700000500
-    }));
-
-    const claim = await postJson(
-        `${baseUrl}/api/billing/checkout-session/claim`,
-        { session_id: sessionId, blinded_requests: blindedRequests }
-    );
-    assert.equal(claim.tickets_issued, 500);
-    assert.equal(claim.session.email, email);
-    assert.equal(claim.session.billingEmail, email);
-    assert.equal(claim.session.stripeCustomerId, undefined);
-    assert.equal(claim.session.ticketLinkCode, undefined);
-    assert.equal(claim.ticket_link, undefined);
-
-    const store = await readStore(storePath);
-    const session = store.checkoutSessions[sessionId];
-    assert.equal(store.ticketLinks[session.ticketLinkCode].stripeCheckoutSessionId, sessionId);
-});
-
 test('billing demo server links subscription claims to matching checkout subscription', { timeout: 10000 }, async (t) => {
+    const accountId = '1234567890123456';
     const email = 'buyer@example.com';
     const initialStore = buildStore({
         customers: {
@@ -993,6 +837,7 @@ test('billing demo server links subscription claims to matching checkout subscri
         lineId: 'il_subscription_first',
         customerId: 'cus_multi_session',
         email,
+        accountId,
         subscriptionId: 'sub_first',
         created: 1700000550
     }));
@@ -1003,21 +848,10 @@ test('billing demo server links subscription claims to matching checkout subscri
     assert.equal(link.stripeCheckoutSessionId, 'cs_subscription_first');
     assert.equal(store.checkoutSessions.cs_subscription_first.ticketLinkCode, link.code);
     assert.equal(store.checkoutSessions.cs_subscription_second.ticketLinkCode, undefined);
-
-    const rejected = await fetch(`${baseUrl}/api/billing/checkout-session/claim`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            session_id: 'cs_subscription_second',
-            blinded_requests: Array.from({ length: 500 }, (_, index) => `wrong-session-${index}`)
-        })
-    });
-    const rejectedData = await rejected.json();
-    assert.equal(rejected.status, 202, JSON.stringify(rejectedData));
-    assert.equal(rejectedData.pending, true);
 });
 
 test('billing demo server reads nested Stripe invoice subscription ids', { timeout: 10000 }, async (t) => {
+    const accountId = '1234567890123456';
     const email = 'buyer@example.com';
     const sessionId = 'cs_nested_subscription';
     const initialStore = buildStore({
@@ -1052,6 +886,7 @@ test('billing demo server reads nested Stripe invoice subscription ids', { timeo
         lineId: 'il_nested_subscription',
         customerId: 'cus_nested_subscription',
         email,
+        accountId,
         subscriptionId: null,
         created: 1700000560
     });
@@ -1070,220 +905,6 @@ test('billing demo server reads nested Stripe invoice subscription ids', { timeo
     assert.equal(store.customers[email].subscription.id, 'sub_nested_subscription');
     assert.equal(link.stripeSubscriptionId, 'sub_nested_subscription');
     assert.equal(link.stripeCheckoutSessionId, sessionId);
-
-    const claim = await postJson(
-        `${baseUrl}/api/billing/checkout-session/claim`,
-        {
-            session_id: sessionId,
-            blinded_requests: Array.from({ length: 500 }, (_, index) => `nested-session-${index}`)
-        }
-    );
-    assert.equal(claim.tickets_issued, 500);
-});
-
-test('billing demo server creates email-based top-up links', { timeout: 10000 }, async (t) => {
-    const email = 'buyer@example.com';
-    const sessionId = 'cs_email_topup_completed';
-    const initialStore = buildStore({
-        customers: {
-            [email]: {
-                email,
-                userId: 'user-email-topup',
-                stripeCustomerId: 'cus_email_topup',
-                subscription: {
-                    id: 'sub_email_topup',
-                    status: 'active',
-                    updatedAt: '2026-07-01T00:00:00.000Z',
-                    stripeEventCreated: 1700000599
-                },
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        },
-        checkoutSessions: {
-            [sessionId]: {
-                sessionId,
-                email,
-                billingEmail: email,
-                stripeCustomerId: 'cus_email_topup',
-                checkoutType: 'topup',
-                mode: 'payment',
-                priceId: TOPUP_PRICE_ID,
-                ticketCount: 100,
-                status: 'created',
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        }
-    });
-    const { baseUrl, storePath } = await startBillingDemoServer(t, {
-        STRIPE_TOPUP_100_PRICE_ID: TOPUP_PRICE_ID
-    }, initialStore);
-
-    await postSignedWebhook(baseUrl, buildCheckoutSessionCompletedEvent({
-        eventId: 'evt_email_topup_completed',
-        sessionId,
-        customerId: 'cus_email_topup',
-        email,
-        clientReferenceId: 'user-email-topup',
-        metadata: {
-            oa_demo_user_id: 'user-email-topup',
-            purchase_type: 'topup_100'
-        },
-        created: 1700000600
-    }));
-
-    const store = await readStore(storePath);
-    const topupLink = Object.values(store.ticketLinks).find(link => link.sourceType === 'topup');
-    assert.equal(topupLink.accountId, null);
-    assert.equal(topupLink.email, email);
-    assert.equal(topupLink.ticketCount, 100);
-    assert.equal(topupLink.stripeCheckoutSessionId, sessionId);
-
-    const blindedRequests = Array.from({ length: 100 }, (_, index) => `email-topup-blinded-${index}`);
-    const claim = await postJson(
-        `${baseUrl}/api/billing/checkout-session/claim`,
-        { session_id: sessionId, blinded_requests: blindedRequests }
-    );
-    assert.equal(claim.tickets_issued, 100);
-    assert.equal(claim.allocations[0].entitlementId, topupLink.entitlementId);
-});
-
-test('billing demo server recovers completed email top-ups without a ticket link', { timeout: 10000 }, async (t) => {
-    const email = 'buyer@example.com';
-    const sessionId = 'cs_orphaned_email_topup';
-    const initialStore = buildStore({
-        customers: {
-            [email]: {
-                email,
-                userId: 'user-orphaned-topup',
-                stripeCustomerId: 'cus_orphaned_topup',
-                subscription: {
-                    id: 'sub_orphaned_topup',
-                    status: 'active',
-                    updatedAt: '2026-07-01T00:00:00.000Z',
-                    stripeEventCreated: 1700000699
-                },
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        },
-        checkoutSessions: {
-            [sessionId]: {
-                sessionId,
-                accountId: 'mistaken-demo-user-id',
-                email,
-                billingEmail: email,
-                stripeCustomerId: 'cus_orphaned_topup',
-                checkoutType: 'topup',
-                mode: 'payment',
-                priceId: TOPUP_PRICE_ID,
-                ticketCount: 100,
-                status: 'completed',
-                completedAt: '2026-07-01T00:00:00.000Z',
-                deliveryError: 'Premium is required before adding tickets.',
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        }
-    });
-    const { baseUrl, storePath } = await startBillingDemoServer(t, {
-        STRIPE_TOPUP_100_PRICE_ID: TOPUP_PRICE_ID
-    }, initialStore);
-
-    const claim = await postJson(
-        `${baseUrl}/api/billing/checkout-session/claim`,
-        {
-            session_id: sessionId,
-            blinded_requests: Array.from({ length: 100 }, (_, index) => `orphaned-topup-${index}`)
-        }
-    );
-    assert.equal(claim.tickets_issued, 100);
-
-    const store = await readStore(storePath);
-    const recoveredSession = store.checkoutSessions[sessionId];
-    const recoveredLink = store.ticketLinks[recoveredSession.ticketLinkCode];
-    assert.equal(recoveredSession.accountId, null);
-    assert.equal(recoveredSession.ticketCount, 100);
-    assert.equal(recoveredLink.sourceType, 'topup');
-    assert.equal(recoveredLink.accountId, null);
-    assert.equal(recoveredLink.email, email);
-});
-
-test('billing demo server rejects untracked top-up checkout completions', { timeout: 10000 }, async (t) => {
-    const accountId = '1234567890123456';
-    const storePath = buildStorePath();
-    const initialStore = buildStore({
-        accounts: {
-            [accountId]: {
-                accountId,
-                billingEmail: 'buyer@example.com',
-                stripeCustomerId: 'cus_untracked_topup',
-                subscription: {
-                    id: 'sub_untracked_topup',
-                    status: 'active',
-                    updatedAt: '2026-07-01T00:00:00.000Z',
-                    stripeEventCreated: 1700000299
-                },
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        }
-    });
-    await fs.writeFile(storePath, `${JSON.stringify(initialStore, null, 2)}\n`);
-    const { baseUrl } = await startBillingDemoServer(t, {
-        STRIPE_TOPUP_100_PRICE_ID: TOPUP_PRICE_ID,
-        BILLING_DEMO_STORE: storePath
-    });
-
-    await postSignedWebhook(baseUrl, buildCheckoutSessionCompletedEvent({
-        eventId: 'evt_untracked_topup',
-        sessionId: 'cs_untracked_topup',
-        customerId: 'cus_untracked_topup',
-        email: 'buyer@example.com',
-        accountId,
-        created: 1700000300
-    }));
-
-    const store = await readStore(storePath);
-    assert.equal(Object.keys(store.ticketLinks).length, 0);
-    assert.equal(store.checkoutSessions.cs_untracked_topup.status, 'ignored');
-    assert.match(store.checkoutSessions.cs_untracked_topup.deliveryError, /Unknown or mismatched/);
-});
-
-test('billing demo server does not authorize top-ups for checkout-completed subscriptions', { timeout: 10000 }, async (t) => {
-    const accountId = '1234567890123456';
-    const initialStore = buildStore({
-        accounts: {
-            [accountId]: {
-                accountId,
-                billingEmail: 'buyer@example.com',
-                stripeCustomerId: 'cus_pending_subscription',
-                subscription: {
-                    id: 'sub_pending_subscription',
-                    status: 'checkout_completed',
-                    updatedAt: '2026-07-01T00:00:00.000Z',
-                    stripeEventCreated: 1700000399
-                },
-                createdAt: '2026-07-01T00:00:00.000Z'
-            }
-        }
-    });
-    const { baseUrl } = await startBillingDemoServer(t, {
-        STRIPE_TOPUP_100_PRICE_ID: TOPUP_PRICE_ID
-    }, initialStore);
-
-    const duplicateCheckout = await fetch(`${baseUrl}/api/billing/checkout-subscription`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountId })
-    });
-    const duplicateData = await duplicateCheckout.json();
-    assert.equal(duplicateCheckout.status, 409, JSON.stringify(duplicateData));
-
-    const topupCheckout = await fetch(`${baseUrl}/api/billing/checkout-topup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountId })
-    });
-    const topupData = await topupCheckout.json();
-    assert.equal(topupCheckout.status, 403, JSON.stringify(topupData));
-    assert.match(topupData.error, /Premium is required/);
 });
 
 async function startBillingDemoServer(t, envOverrides = {}, initialStore = null) {
@@ -1422,13 +1043,6 @@ function buildPremiumAccount(accountId, overrides = {}) {
     };
 }
 
-function buildLegacyClaimId(email, blindedRequests) {
-    return crypto
-        .createHash('sha256')
-        .update(JSON.stringify({ email, blindedRequests }))
-        .digest('hex');
-}
-
 function buildAccountClaimId(accountId, entitlementId, blindedRequests) {
     return crypto
         .createHash('sha256')
@@ -1504,8 +1118,7 @@ function buildCheckoutSessionCompletedEvent({
                 customer_details: { email },
                 client_reference_id: clientReferenceId,
                 metadata: metadata || {
-                    ...(accountId ? { oa_account_id: accountId } : {}),
-                    purchase_type: 'topup_100'
+                    ...(accountId ? { oa_account_id: accountId } : {})
                 }
             }
         }

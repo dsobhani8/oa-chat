@@ -21,8 +21,6 @@ const STRIPE_API_BASE_URL = process.env.STRIPE_API_BASE_URL || 'https://api.stri
 const PREMIUM_PRICE_ID = process.env.STRIPE_PREMIUM_PRICE_ID ||
     process.env.STRIPE_STARTER_PRICE_ID ||
     '';
-const TOPUP_100_PRICE_ID = process.env.STRIPE_TOPUP_100_PRICE_ID || '';
-const TOPUP_100_TICKET_COUNT = Number.parseInt(process.env.STRIPE_TOPUP_100_TICKETS || '100', 10);
 const DEMO_RENEWAL_SECONDS = parsePositiveInt(process.env.BILLING_DEMO_RENEWAL_SECONDS, 0);
 const DEMO_RENEWAL_TICKETS = parsePositiveInt(process.env.BILLING_DEMO_RENEWAL_TICKETS, 0);
 const WEBHOOK_TOLERANCE_SECONDS = 300;
@@ -44,16 +42,6 @@ const PLAN_BY_PRICE = new Map([
         name: 'Premium',
         monthlyTickets: 500,
         monthlyPriceUsd: 35
-    }]
-].filter(([priceId]) => typeof priceId === 'string' && priceId.startsWith('price_')));
-
-const TOPUP_BY_PRICE = new Map([
-    [TOPUP_100_PRICE_ID, {
-        id: 'topup_100',
-        name: 'top-up',
-        ticketCount: Number.isFinite(TOPUP_100_TICKET_COUNT) && TOPUP_100_TICKET_COUNT > 0
-            ? TOPUP_100_TICKET_COUNT
-            : 100
     }]
 ].filter(([priceId]) => typeof priceId === 'string' && priceId.startsWith('price_')));
 
@@ -80,7 +68,6 @@ const server = http.createServer(async (req, res) => {
                     webhookSecret: isConfigured(STRIPE_WEBHOOK_SECRET, 'whsec_'),
                     premiumPriceId: isConfigured(PREMIUM_PRICE_ID, 'price_'),
                     starterPriceId: isConfigured(PREMIUM_PRICE_ID, 'price_'),
-                    topupPriceId: isConfigured(TOPUP_100_PRICE_ID, 'price_'),
                     demoRenewalSeconds: DEMO_RENEWAL_SECONDS
                 }
             });
@@ -89,26 +76,6 @@ const server = http.createServer(async (req, res) => {
 
         if (req.method === 'POST' && url.pathname === '/api/billing/checkout') {
             await handleCheckout(req, res);
-            return;
-        }
-
-        if (req.method === 'POST' && url.pathname === '/api/billing/topup') {
-            await handleTopupCheckout(req, res);
-            return;
-        }
-
-        if (req.method === 'POST' && url.pathname === '/api/billing/checkout-subscription') {
-            await handleAccountSubscriptionCheckout(req, res);
-            return;
-        }
-
-        if (req.method === 'POST' && url.pathname === '/api/billing/checkout-topup') {
-            await handleAccountTopupCheckout(req, res);
-            return;
-        }
-
-        if (req.method === 'POST' && url.pathname === '/api/billing/account') {
-            await handleAccount(req, res);
             return;
         }
 
@@ -122,23 +89,8 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        if (req.method === 'GET' && url.pathname === '/api/billing/checkout-session') {
-            handleCheckoutSessionStatus(url, res);
-            return;
-        }
-
-        if (req.method === 'POST' && url.pathname === '/api/billing/checkout-session/claim') {
-            await handleCheckoutSessionClaim(req, res);
-            return;
-        }
-
         if (req.method === 'POST' && url.pathname === '/api/billing/tickets/claim') {
             await handleAccountTicketsClaim(req, res);
-            return;
-        }
-
-        if (req.method === 'POST' && url.pathname === '/api/tickets/claim') {
-            await handleClaim(req, res);
             return;
         }
 
@@ -174,193 +126,15 @@ server.listen(PORT, HOST, () => {
     void processResolvablePendingPaidInvoices();
 });
 
-async function handleAccount(req, res) {
-    const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    if (!isValidEmail(email)) {
-        sendJson(res, 400, { error: 'A valid email is required.' });
-        return;
-    }
-
-    const customer = ensureAccountRecord(email);
-    saveStore();
-    sendJson(res, 200, {
-        email,
-        userId: customer.userId,
-        accountExists: true,
-        status: buildStatus(email)
-    });
-}
-
 async function handleCheckout(req, res) {
     requireStripeConfig();
-    const body = await readJson(req);
     const sessionAccountId = getDemoAccountSession(req);
-    if (sessionAccountId) {
-        await startAccountSubscriptionCheckout(res, sessionAccountId);
+    if (!sessionAccountId) {
+        sendJson(res, 401, { error: 'Account session is required.' });
         return;
     }
 
-    const email = normalizeEmail(body.email);
-    if (!PREMIUM_PRICE_ID || !PLAN_BY_PRICE.has(PREMIUM_PRICE_ID)) {
-        sendJson(res, 500, { error: 'STRIPE_PREMIUM_PRICE_ID is not configured.' });
-        return;
-    }
-
-    const existingAccount = email ? ensureAccountRecord(email) : null;
-    if (existingAccount && hasCurrentPremiumSubscription(existingAccount)) {
-        sendJson(res, 200, {
-            alreadySubscribed: true,
-            status: buildStatus(email)
-        });
-        return;
-    }
-    const pendingCheckout = getReusablePendingCheckout(existingAccount, 'subscription');
-    if (pendingCheckout) {
-        sendJson(res, 200, {
-            url: pendingCheckout.url,
-            pendingCheckout: true,
-            sessionId: pendingCheckout.sessionId
-        });
-        return;
-    }
-
-    const checkoutReturnUrls = buildCheckoutReturnUrls();
-    const plan = PLAN_BY_PRICE.get(PREMIUM_PRICE_ID);
-
-    const sessionParams = {
-        mode: 'subscription',
-        success_url: checkoutReturnUrls.successUrl,
-        cancel_url: checkoutReturnUrls.cancelUrl,
-        'line_items[0][price]': PREMIUM_PRICE_ID,
-        'line_items[0][quantity]': '1'
-    };
-
-    if (email && existingAccount.stripeCustomerId) {
-        sessionParams.customer = existingAccount.stripeCustomerId;
-        sessionParams.client_reference_id = demoUserId(email);
-        sessionParams['subscription_data[metadata][oa_demo_user_id]'] = demoUserId(email);
-    } else if (email) {
-        sessionParams.customer_email = email;
-        sessionParams.client_reference_id = demoUserId(email);
-        sessionParams['subscription_data[metadata][oa_demo_user_id]'] = demoUserId(email);
-    }
-
-    const session = await stripeRequest('/v1/checkout/sessions', sessionParams);
-    recordCheckoutSession(session, {
-        checkoutType: 'subscription',
-        mode: 'subscription',
-        priceId: PREMIUM_PRICE_ID,
-        ticketCount: plan.monthlyTickets,
-        checkoutReturnUrls
-    });
-
-    if (email) {
-        existingAccount.pendingCheckout = {
-            sessionId: session.id,
-            url: session.url,
-            expiresAt: session.expires_at
-                ? new Date(session.expires_at * 1000).toISOString()
-                : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-            successUrl: checkoutReturnUrls.successUrl,
-            cancelUrl: checkoutReturnUrls.cancelUrl,
-            appUrl: buildAppReturnUrl(),
-            createdAt: new Date().toISOString()
-        };
-        updateCheckoutSessionRecord(session.id, {
-            email,
-            billingEmail: email,
-            stripeCustomerId: existingAccount.stripeCustomerId || null
-        });
-    }
-
-    saveStore();
-
-    sendJson(res, 200, { url: session.url });
-}
-
-async function handleTopupCheckout(req, res) {
-    requireStripeConfig();
-    const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    if (!email) {
-        sendJson(res, 400, { error: 'Premium is required before adding tickets.' });
-        return;
-    }
-    if (!TOPUP_100_PRICE_ID || !TOPUP_BY_PRICE.has(TOPUP_100_PRICE_ID)) {
-        sendJson(res, 500, { error: 'STRIPE_TOPUP_100_PRICE_ID is not configured.' });
-        return;
-    }
-
-    const customer = store.customers[email] || null;
-    if (!hasPaidPremiumSubscription(customer)) {
-        sendJson(res, 403, { error: 'Premium is required before adding tickets.' });
-        return;
-    }
-
-    const checkoutReturnUrls = buildCheckoutReturnUrls();
-    const topup = TOPUP_BY_PRICE.get(TOPUP_100_PRICE_ID);
-    const sessionParams = {
-        mode: 'payment',
-        success_url: checkoutReturnUrls.successUrl,
-        cancel_url: checkoutReturnUrls.cancelUrl,
-        client_reference_id: demoUserId(email),
-        'metadata[purchase_type]': 'topup_100',
-        'metadata[oa_demo_user_id]': demoUserId(email),
-        'payment_intent_data[metadata][purchase_type]': 'topup_100',
-        'payment_intent_data[metadata][oa_demo_user_id]': demoUserId(email),
-        'line_items[0][price]': TOPUP_100_PRICE_ID,
-        'line_items[0][quantity]': '1'
-    };
-
-    if (customer.stripeCustomerId) {
-        sessionParams.customer = customer.stripeCustomerId;
-    } else {
-        sessionParams.customer_email = email;
-    }
-
-    const session = await stripeRequest('/v1/checkout/sessions', sessionParams);
-    recordCheckoutSession(session, {
-        checkoutType: 'topup',
-        mode: 'payment',
-        priceId: TOPUP_100_PRICE_ID,
-        ticketCount: topup.ticketCount,
-        checkoutReturnUrls
-    });
-    updateCheckoutSessionRecord(session.id, {
-        email,
-        billingEmail: email,
-        stripeCustomerId: customer.stripeCustomerId || null
-    });
-    customer.pendingCheckout = {
-        sessionId: session.id,
-        type: 'topup',
-        url: session.url,
-        expiresAt: session.expires_at
-            ? new Date(session.expires_at * 1000).toISOString()
-            : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        appUrl: buildAppReturnUrl(),
-        createdAt: new Date().toISOString()
-    };
-    saveStore();
-
-    sendJson(res, 200, { url: session.url });
-}
-
-async function handleAccountSubscriptionCheckout(req, res) {
-    requireStripeConfig();
-    const body = await readJson(req);
-    const accountId = normalizeAccountId(body.account_id || body.accountId);
-    if (!accountId) {
-        sendJson(res, 400, { error: 'Account is required before checkout.' });
-        return;
-    }
-    if (!PREMIUM_PRICE_ID || !PLAN_BY_PRICE.has(PREMIUM_PRICE_ID)) {
-        sendJson(res, 500, { error: 'STRIPE_PREMIUM_PRICE_ID is not configured.' });
-        return;
-    }
-
-    await startAccountSubscriptionCheckout(res, accountId);
+    await startAccountSubscriptionCheckout(res, sessionAccountId);
 }
 
 async function startAccountSubscriptionCheckout(res, accountId) {
@@ -465,228 +239,43 @@ async function createAccountSubscriptionCheckout(account) {
     };
 }
 
-async function handleAccountTopupCheckout(req, res) {
-    requireStripeConfig();
-    const body = await readJson(req);
-    const accountId = normalizeAccountId(body.account_id || body.accountId);
-    if (!accountId) {
-        sendJson(res, 400, { error: 'Account is required before checkout.' });
-        return;
-    }
-    if (!TOPUP_100_PRICE_ID || !TOPUP_BY_PRICE.has(TOPUP_100_PRICE_ID)) {
-        sendJson(res, 500, { error: 'STRIPE_TOPUP_100_PRICE_ID is not configured.' });
-        return;
-    }
-
-    const account = store.accounts?.[accountId] || null;
-    if (!hasPaidPremiumSubscription(account)) {
-        sendJson(res, 403, { error: 'Premium is required before adding tickets.' });
-        return;
-    }
-    if (!account.stripeCustomerId && !account.billingEmail) {
-        sendJson(res, 409, { error: 'Billing is still linking to this account. Try again in a moment.' });
-        return;
-    }
-
-    const checkoutReturnUrls = buildCheckoutReturnUrls();
-    const topup = TOPUP_BY_PRICE.get(TOPUP_100_PRICE_ID);
-    const sessionParams = {
-        mode: 'payment',
-        success_url: checkoutReturnUrls.successUrl,
-        cancel_url: checkoutReturnUrls.cancelUrl,
-        client_reference_id: accountId,
-        'metadata[oa_account_id]': accountId,
-        'metadata[purchase_type]': 'topup_100',
-        'payment_intent_data[metadata][oa_account_id]': accountId,
-        'payment_intent_data[metadata][purchase_type]': 'topup_100',
-        'line_items[0][price]': TOPUP_100_PRICE_ID,
-        'line_items[0][quantity]': '1'
-    };
-
-    if (account.stripeCustomerId) {
-        sessionParams.customer = account.stripeCustomerId;
-    } else {
-        sessionParams.customer_email = account.billingEmail;
-    }
-
-    const session = await stripeRequest('/v1/checkout/sessions', sessionParams);
-    recordCheckoutSession(session, {
-        accountId,
-        checkoutType: 'topup',
-        mode: 'payment',
-        priceId: TOPUP_100_PRICE_ID,
-        ticketCount: topup.ticketCount,
-        checkoutReturnUrls
-    });
-    account.pendingCheckout = {
-        sessionId: session.id,
-        type: 'topup',
-        url: session.url,
-        expiresAt: session.expires_at
-            ? new Date(session.expires_at * 1000).toISOString()
-            : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        appUrl: buildAppReturnUrl(),
-        createdAt: new Date().toISOString()
-    };
-    saveStore();
-
-    sendJson(res, 200, { url: session.url });
-}
-
 async function handlePortal(req, res) {
     requireStripeConfig();
-    const body = await readJson(req);
     const sessionAccountId = getDemoAccountSession(req);
-    const accountId = sessionAccountId || normalizeAccountId(body.account_id || body.accountId);
-    if (accountId) {
-        const account = store.accounts?.[accountId] || null;
-        if (!account?.stripeCustomerId) {
-            sendJson(res, 404, { error: 'No Stripe customer exists for this account yet.' });
-            return;
-        }
-
-        const session = await stripeRequest('/v1/billing_portal/sessions', {
-            customer: account.stripeCustomerId,
-            return_url: buildAppReturnUrl({ billing: 'portal' })
-        });
-
-        sendJson(res, 200, { url: session.url });
+    if (!sessionAccountId) {
+        sendJson(res, 401, { error: 'Account session is required.' });
         return;
     }
 
-    const email = normalizeEmail(body.email);
-    if (!email) {
-        sendJson(res, 400, { error: 'Email is required.' });
+    const account = store.accounts?.[sessionAccountId] || null;
+    if (!account?.stripeCustomerId) {
+        sendJson(res, 404, { error: 'No Stripe customer exists for this account yet.' });
         return;
     }
 
-    const customer = store.customers[email];
-    if (!customer?.stripeCustomerId) {
-        sendJson(res, 404, { error: 'No Stripe customer exists for this demo email yet.' });
-        return;
-    }
-
-    const session = await stripeRequest('/v1/billing_portal/sessions', {
-        customer: customer.stripeCustomerId,
+    const portalSession = await stripeRequest('/v1/billing_portal/sessions', {
+        customer: account.stripeCustomerId,
         return_url: buildAppReturnUrl({ billing: 'portal' })
     });
 
-    sendJson(res, 200, { url: session.url });
+    sendJson(res, 200, { url: portalSession.url });
 }
 
 function handleStatus(req, url, res) {
     const sessionAccountId = getDemoAccountSession(req);
     const debugAccountId = normalizeAccountId(url.searchParams.get('account_id'));
-    const accountId = sessionAccountId || debugAccountId;
-    if (accountId) {
-        if (sessionAccountId) {
-            maybeCreateDemoRenewalEntitlement(accountId);
-        }
-        sendJson(res, 200, buildAccountStatus(accountId));
+    if (sessionAccountId) {
+        maybeCreateDemoRenewalEntitlement(sessionAccountId);
+        sendJson(res, 200, buildAccountStatus(sessionAccountId));
         return;
     }
 
-    const email = normalizeEmail(url.searchParams.get('email'));
-    if (!email) {
-        sendJson(res, 400, { error: 'Email is required.' });
+    if (debugAccountId) {
+        sendJson(res, 200, buildAccountDebugStatus(debugAccountId));
         return;
     }
 
-    sendJson(res, 200, buildStatus(email));
-}
-
-function handleCheckoutSessionStatus(url, res) {
-    const sessionId = normalizeSessionId(url.searchParams.get('session_id'));
-    if (!sessionId) {
-        sendJson(res, 400, { error: 'session_id is required.' });
-        return;
-    }
-
-    const session = store.checkoutSessions[sessionId];
-    if (!session) {
-        sendJson(res, 404, { error: 'Checkout Session is not known yet.' });
-        return;
-    }
-
-    sendJson(res, 200, buildCheckoutSessionPublicStatus(session));
-}
-
-function buildCheckoutSessionPublicStatus(session) {
-    return {
-        sessionId: session.sessionId,
-        status: session.status || 'created',
-        checkoutType: session.checkoutType || null,
-        ticketCount: session.ticketCount || null
-    };
-}
-
-function buildCheckoutSessionClaimStatus(session) {
-    return {
-        ...buildCheckoutSessionPublicStatus(session),
-        email: session.email || null,
-        billingEmail: session.billingEmail || session.email || null
-    };
-}
-
-async function handleCheckoutSessionClaim(req, res) {
-    const body = await readJson(req);
-    const sessionId = normalizeSessionId(body.session_id || body.sessionId);
-    if (!sessionId) {
-        sendJson(res, 400, { error: 'session_id is required.' });
-        return;
-    }
-
-    const session = store.checkoutSessions[sessionId];
-    if (!session) {
-        sendJson(res, 404, { error: 'Checkout Session is not known yet.' });
-        return;
-    }
-
-    if (!session.ticketLinkCode) {
-        linkCheckoutSessionToExistingTicketLink(session);
-    }
-    if (session.status === 'completed' && !session.ticketLinkCode) {
-        await recoverCompletedCheckoutSessionTicketLink(session);
-    }
-
-    const blindedRequests = Array.isArray(body.blinded_requests)
-        ? body.blinded_requests.map(String).filter(Boolean)
-        : [];
-    if (session.status !== 'completed') {
-        sendJson(res, 202, {
-            pending: true,
-            session: buildCheckoutSessionPublicStatus(session)
-        });
-        return;
-    }
-    if (!session.ticketLinkCode) {
-        sendJson(res, 202, {
-            pending: true,
-            session: buildCheckoutSessionPublicStatus(session)
-        });
-        return;
-    }
-
-    const link = getTicketLink(session.ticketLinkCode);
-    if (!link) {
-        sendJson(res, 404, { error: 'Ticket link was not found for this Checkout Session.' });
-        return;
-    }
-    if (!isCheckoutSessionAuthorizedForLink(session, link)) {
-        sendJson(res, 409, { error: 'Checkout Session does not match this ticket batch.' });
-        return;
-    }
-    if (isTicketLinkExpired(link)) {
-        link.status = 'expired';
-        saveStore();
-        sendJson(res, 410, { error: 'Ticket link has expired.' });
-        return;
-    }
-
-    sendTicketLinkClaimResponse(res, link, blindedRequests, {
-        includeTicketLink: false,
-        session: buildCheckoutSessionClaimStatus(session)
-    });
+    sendJson(res, 401, { error: 'Account session is required.' });
 }
 
 function handleTicketLinkStatus(rawCode, res) {
@@ -740,12 +329,15 @@ function sendTicketLinkClaimResponse(res, link, blindedRequests, options = {}) {
     }
 
     const claimId = buildTicketLinkClaimId(link, blindedRequests);
-    const legacyClaimId = buildClaimId(link.email, blindedRequests);
+    const requestHash = buildBlindedRequestHash(blindedRequests);
     if (link.claimId) {
         const existingClaim = store.claims[link.claimId];
-        if (existingClaim && (link.claimId === claimId || link.claimId === legacyClaimId)) {
+        if (existingClaim &&
+            link.claimId === claimId &&
+            existingClaim.requestHash === requestHash &&
+            isCompleteReplayableClaim(existingClaim, blindedRequests.length)) {
             sendJson(res, 200, {
-                ...buildClaimResponse(link.email, existingClaim, {
+                ...buildTicketClaimResponse(existingClaim, {
                     replayed: true,
                     includeStatus: false
                 }),
@@ -758,9 +350,7 @@ function sendTicketLinkClaimResponse(res, link, blindedRequests, options = {}) {
         return;
     }
 
-    const allocation = allocateEntitlements(link.email, blindedRequests.length, {
-        entitlementId: link.entitlementId
-    });
+    const allocation = allocateTicketLinkEntitlement(link, blindedRequests.length);
     if (allocation.error) {
         sendJson(res, 400, { error: allocation.error });
         return;
@@ -772,7 +362,9 @@ function sendTicketLinkClaimResponse(res, link, blindedRequests, options = {}) {
     }));
     const claim = {
         id: claimId,
-        email: link.email,
+        accountId: link.accountId || null,
+        entitlementId: link.entitlementId,
+        requestHash,
         requestCount: blindedRequests.length,
         signedBlindedResponses: signed,
         ticketsIssued: signed.length,
@@ -789,60 +381,10 @@ function sendTicketLinkClaimResponse(res, link, blindedRequests, options = {}) {
     saveStore();
 
     sendJson(res, 200, {
-        ...buildClaimResponse(link.email, claim, { includeStatus: false }),
+        ...buildTicketClaimResponse(claim, { includeStatus: false }),
         ...(includeTicketLink ? { ticket_link: buildTicketLinkPublicStatus(link) } : {}),
         ...extra
     });
-}
-
-async function handleClaim(req, res) {
-    const body = await readJson(req);
-    const email = normalizeEmail(body.email);
-    const blindedRequests = Array.isArray(body.blinded_requests)
-        ? body.blinded_requests.map(String).filter(Boolean)
-        : [];
-
-    if (!email) {
-        sendJson(res, 400, { error: 'Email is required.' });
-        return;
-    }
-    if (blindedRequests.length === 0) {
-        sendJson(res, 400, { error: 'At least one blinded request is required.' });
-        return;
-    }
-
-    const claimId = buildClaimId(email, blindedRequests);
-    const existingClaim = store.claims[claimId];
-    if (existingClaim) {
-        sendJson(res, 200, buildClaimResponse(email, existingClaim, { replayed: true }));
-        return;
-    }
-
-    const allocation = allocateEntitlements(email, blindedRequests.length);
-    if (allocation.error) {
-        sendJson(res, 400, { error: allocation.error, status: buildStatus(email) });
-        return;
-    }
-
-    const signed = blindedRequests.map((blindedRequest, index) => ({
-        index,
-        signed_blinded_response: signBlindedRequest(blindedRequest)
-    }));
-
-    const claim = {
-        id: claimId,
-        email,
-        requestCount: blindedRequests.length,
-        signedBlindedResponses: signed,
-        ticketsIssued: signed.length,
-        ticketMode: 'demo',
-        allocations: allocation.allocations,
-        createdAt: new Date().toISOString()
-    };
-    store.claims[claimId] = claim;
-    saveStore();
-
-    sendJson(res, 200, buildClaimResponse(email, claim));
 }
 
 async function handleAccountTicketsClaim(req, res) {
@@ -1020,24 +562,11 @@ async function handleCheckoutCompleted(session, eventCreated) {
         });
 
         if (session.mode === 'payment') {
-            if (session.payment_status && session.payment_status !== 'paid') {
-                saveStore();
-                return;
-            }
-            const checkoutRecord = store.checkoutSessions?.[session.id] || null;
-            if (!isKnownTopupCheckoutSession(checkoutRecord, { accountId })) {
-                updateCheckoutSessionRecord(session.id, {
-                    status: 'ignored',
-                    deliveryError: 'Unknown or mismatched top-up Checkout Session.'
-                });
-                saveStore();
-                return;
-            }
-            await handleTopupCheckoutCompleted(session, eventCreated, {
-                accountId,
-                email: email || account.billingEmail || '',
-                customerId
+            updateCheckoutSessionRecord(session.id, {
+                status: 'ignored',
+                deliveryError: 'One-time payment Checkout Sessions are not part of the Premium MVP.'
             });
+            saveStore();
             return;
         }
 
@@ -1063,165 +592,11 @@ async function handleCheckoutCompleted(session, eventCreated) {
         return;
     }
 
-    if (!email) return;
-
-    const customer = ensureAccountRecord(email);
-    if (customerId) {
-        customer.stripeCustomerId = customerId;
-    }
-    customer.pendingCheckout = null;
-        updateCheckoutSessionRecord(session.id, {
-            email,
-            billingEmail: email,
-            stripeCustomerId: customerId || null,
-            stripeSubscriptionId: getCheckoutSessionSubscriptionId(session),
-            status: 'completed',
-            completedAt: eventCreatedIso(eventCreated)
-        });
-
-    if (session.mode === 'payment') {
-        if (session.payment_status && session.payment_status !== 'paid') {
-            saveStore();
-            return;
-        }
-        const checkoutRecord = store.checkoutSessions?.[session.id] || null;
-        if (!isKnownTopupCheckoutSession(checkoutRecord, { email })) {
-            updateCheckoutSessionRecord(session.id, {
-                status: 'ignored',
-                deliveryError: 'Unknown or mismatched top-up Checkout Session.'
-            });
-            saveStore();
-            return;
-        }
-        await handleTopupCheckoutCompleted(session, eventCreated, {
-            accountId: null,
-            email,
-            customerId
-        });
-        return;
-    }
-
-    const subscriptionId = typeof session.subscription === 'string'
-        ? session.subscription
-        : session.subscription?.id;
-    if (subscriptionId &&
-        shouldApplyCheckoutCompletedUpdate(customer, subscriptionId) &&
-        shouldApplySubscriptionUpdate(customer, eventCreated)) {
-        customer.subscription = {
-            id: subscriptionId,
-            status: 'checkout_completed',
-            cancelAtPeriodEnd: false,
-            currentPeriodStart: null,
-            currentPeriodEnd: null,
-            updatedAt: eventCreatedIso(eventCreated),
-            stripeEventCreated: normalizeStripeEventCreated(eventCreated)
-        };
-    }
-
-    await processPendingPaidInvoicesForCustomer(customerId, email);
-}
-
-async function handleTopupCheckoutCompleted(session, eventCreated, { accountId, email, customerId }) {
-    const normalizedAccountId = normalizeAccountId(accountId);
-    const deliveryEmail = normalizeEmail(email || (normalizedAccountId ? findBillingEmailByAccountId(normalizedAccountId) : '') || '');
-    const account = normalizedAccountId ? ensureBillingAccountRecord(normalizedAccountId) : null;
-    const customer = deliveryEmail ? ensureAccountRecord(deliveryEmail) : null;
-    const subscriberRecord = account || customer;
-    if (!hasPaidPremiumSubscription(subscriberRecord)) {
-        updateCheckoutSessionRecord(session.id, {
-            status: 'completed',
-            deliveryError: 'Premium is required before adding tickets.'
-        });
-        saveStore();
-        return;
-    }
-    if (!deliveryEmail) {
-        updateCheckoutSessionRecord(session.id, {
-            status: 'completed',
-            deliveryError: 'Checkout completed without a billing email.'
-        });
-        saveStore();
-        return;
-    }
-
-    if (account) linkBillingAccountEmail(account, deliveryEmail);
-    if (customerId) {
-        if (account) account.stripeCustomerId = customerId;
-        if (customer) customer.stripeCustomerId = customerId;
-    }
-
-    const topup = TOPUP_BY_PRICE.get(TOPUP_100_PRICE_ID);
-    if (!topup) return;
-    const entitlementId = `topup:${session.id}:${TOPUP_100_PRICE_ID}`;
-    if (!store.entitlements[entitlementId]) {
-        store.entitlements[entitlementId] = {
-            id: entitlementId,
-            userId: normalizedAccountId ? accountUserId(normalizedAccountId) : demoUserId(deliveryEmail),
-            accountId: normalizedAccountId || null,
-            email: deliveryEmail,
-            sourceType: 'topup',
-            planId: topup.id,
-            planName: topup.name,
-            stripeCheckoutSessionId: session.id,
-            stripePriceId: TOPUP_100_PRICE_ID,
-            periodStart: eventCreatedIso(eventCreated),
-            periodEnd: null,
-            ticketsEntitled: topup.ticketCount,
-            blindTicketsIssued: 0,
-            status: 'active',
-            createdAt: new Date().toISOString()
-        };
-    }
-
-    const ticketLink = ensureTopupTicketLink({
-        email: deliveryEmail,
-        accountId: normalizedAccountId || null,
-        entitlementId,
-        session,
-        topup,
-        eventCreated
-    });
     updateCheckoutSessionRecord(session.id, {
-        accountId: normalizedAccountId || null,
-        checkoutType: 'topup',
-        mode: 'payment',
-        priceId: TOPUP_100_PRICE_ID,
-        email: deliveryEmail,
-        billingEmail: deliveryEmail,
-        stripeCustomerId: customerId || account?.stripeCustomerId || customer?.stripeCustomerId || null,
-        ticketLinkCode: ticketLink.code,
-        ticketCount: topup.ticketCount,
-        status: 'completed',
-        completedAt: eventCreatedIso(eventCreated)
+        status: 'ignored',
+        deliveryError: 'Checkout Session did not include an OA account ID.'
     });
     saveStore();
-    await deliverTicketLinkEmail(ticketLink);
-}
-
-async function recoverCompletedCheckoutSessionTicketLink(session) {
-    if (!session || session.ticketLinkCode) return null;
-    if (session.checkoutType !== 'topup' ||
-        session.mode !== 'payment' ||
-        session.priceId !== TOPUP_100_PRICE_ID) {
-        return null;
-    }
-
-    const email = normalizeEmail(session.email || session.billingEmail || '');
-    if (!email || !hasPaidPremiumSubscription(store.customers[email])) {
-        return null;
-    }
-
-    const completedAt = Date.parse(session.completedAt || '');
-    await handleTopupCheckoutCompleted(
-        { id: session.sessionId, mode: 'payment' },
-        Number.isFinite(completedAt) ? Math.floor(completedAt / 1000) : Math.floor(Date.now() / 1000),
-        {
-            accountId: null,
-            email,
-            customerId: session.stripeCustomerId || null
-        }
-    );
-    return store.checkoutSessions?.[session.sessionId]?.ticketLinkCode || null;
 }
 
 async function handleInvoicePaid(invoice, eventCreated, emailOverride = null) {
@@ -1233,12 +608,11 @@ async function handleInvoicePaid(invoice, eventCreated, emailOverride = null) {
     const email = override.email ||
         (accountId ? findBillingEmailByAccountId(accountId) : '') ||
         findEmailByInvoice(invoice);
-    if (!email) {
-        storePendingPaidInvoice(invoice, eventCreated, { accountId });
-        console.warn(`Queued invoice.paid for unresolved customer ${customerId || '(none)'}`);
+    if (!accountId) {
+        storePendingPaidInvoice(invoice, eventCreated);
+        console.warn(`Queued invoice.paid for unresolved OA account ${customerId || '(none)'}`);
         return { pending: true };
     }
-
     const lines = Array.isArray(invoice.lines?.data) ? invoice.lines.data : [];
     const paidLine = lines.find(line => {
         const priceId = getInvoiceLinePriceId(line);
@@ -1259,17 +633,17 @@ async function handleInvoicePaid(invoice, eventCreated, emailOverride = null) {
 
     const priceId = getInvoiceLinePriceId(paidLine);
     const plan = PLAN_BY_PRICE.get(priceId);
-    const customer = ensureAccountRecord(email);
-    const account = accountId ? ensureBillingAccountRecord(accountId) : null;
-    if (account) {
+    const customer = email ? ensureAccountRecord(email) : null;
+    const account = ensureBillingAccountRecord(accountId);
+    if (email) {
         linkBillingAccountEmail(account, email);
     }
     if (customerId) {
-        customer.stripeCustomerId = customerId;
-        if (account) account.stripeCustomerId = customerId;
+        if (customer) customer.stripeCustomerId = customerId;
+        account.stripeCustomerId = customerId;
     }
-    customer.pendingCheckout = null;
-    if (account) account.pendingCheckout = null;
+    if (customer) customer.pendingCheckout = null;
+    account.pendingCheckout = null;
     const invoiceSubscriptionId = getInvoiceSubscriptionId(invoice);
     const subscriptionUpdate = invoiceSubscriptionId
         ? {
@@ -1286,10 +660,10 @@ async function handleInvoicePaid(invoice, eventCreated, emailOverride = null) {
             stripeEventCreated: normalizeStripeEventCreated(eventCreated)
         }
         : null;
-    if (subscriptionUpdate && shouldApplySubscriptionUpdate(customer, eventCreated)) {
+    if (subscriptionUpdate && customer && shouldApplySubscriptionUpdate(customer, eventCreated)) {
         customer.subscription = subscriptionUpdate;
     }
-    if (subscriptionUpdate && account && shouldApplySubscriptionUpdate(account, eventCreated)) {
+    if (subscriptionUpdate && shouldApplySubscriptionUpdate(account, eventCreated)) {
         account.subscription = subscriptionUpdate;
     }
 
@@ -1314,9 +688,9 @@ async function handleInvoicePaid(invoice, eventCreated, emailOverride = null) {
 
     store.entitlements[entitlementId] = {
         id: entitlementId,
-        userId: accountId ? accountUserId(accountId) : demoUserId(email),
-        accountId: accountId || null,
-        email,
+        userId: accountUserId(accountId),
+        accountId,
+        email: email || null,
         sourceType: 'subscription',
         planId: plan.id,
         planName: plan.name,
@@ -1365,7 +739,7 @@ function storePendingPaidInvoice(invoice, eventCreated, options = {}) {
 }
 
 async function processPendingPaidInvoicesForCustomer(customerId, email, accountId = null) {
-    if (!customerId || !email) return;
+    if (!customerId || (!email && !accountId)) return;
     const normalizedAccountId = normalizeAccountId(accountId);
     const entries = Object.entries(store.pendingInvoices || {})
         .filter(([, pending]) =>
@@ -1394,7 +768,7 @@ async function processResolvablePendingPaidInvoices() {
         const email = (accountId ? findBillingEmailByAccountId(accountId) : '') ||
             findEmailByCustomerId(customerId) ||
             findEmailByInvoice(pending?.invoice);
-        if (!email) continue;
+        if (!email && !accountId) continue;
 
         const result = await handleInvoicePaid(pending.invoice, pending.eventCreated, { email, accountId });
         if (result?.ignored || result?.pending) {
@@ -1463,54 +837,6 @@ function handleSubscriptionChanged(subscription, eventCreated) {
     }
 }
 
-function buildStatus(email) {
-    const customer = store.customers[email] || null;
-    const entitlements = Object.values(store.entitlements)
-        .filter(entitlement => entitlement.email === email)
-        .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
-
-    const activeEntitlements = entitlements.filter(entitlement =>
-        entitlement.status === 'active'
-    );
-
-    const totals = activeEntitlements.reduce((acc, entitlement) => {
-        acc.ticketsEntitled += entitlement.ticketsEntitled;
-        acc.blindTicketsIssued += entitlement.blindTicketsIssued;
-        acc.claimableTickets += getManualClaimableTicketCount(entitlement);
-        return acc;
-    }, {
-        ticketsEntitled: 0,
-        blindTicketsIssued: 0,
-        claimableTickets: 0
-    });
-
-    return {
-        email,
-        userId: demoUserId(email),
-        accountExists: !!customer,
-        stripeCustomerId: customer?.stripeCustomerId || null,
-        subscription: customer?.subscription || null,
-        ...totals,
-        entitlements: entitlements.map(entitlement => {
-            const isActive = entitlement.status === 'active';
-            return {
-                id: entitlement.id,
-                sourceType: entitlement.sourceType,
-                planId: entitlement.planId,
-                planName: entitlement.planName,
-                periodStart: entitlement.periodStart,
-                periodEnd: entitlement.periodEnd,
-                ticketsEntitled: entitlement.ticketsEntitled,
-                blindTicketsIssued: entitlement.blindTicketsIssued,
-                claimableTickets: isActive
-                    ? getManualClaimableTicketCount(entitlement)
-                    : 0,
-                status: isActive ? entitlement.status : 'expired'
-            };
-        })
-    };
-}
-
 function buildAccountStatus(accountId) {
     const normalizedAccountId = normalizeAccountId(accountId);
     const account = normalizedAccountId ? store.accounts?.[normalizedAccountId] || null : null;
@@ -1563,6 +889,40 @@ function buildAccountStatus(accountId) {
                 status: isActive ? entitlement.status : 'expired'
             };
         })
+    };
+}
+
+function buildAccountDebugStatus(accountId) {
+    const status = buildAccountStatus(accountId);
+    const subscription = status.subscription
+        ? {
+            status: status.subscription.status || null,
+            cancelAtPeriodEnd: !!status.subscription.cancelAtPeriodEnd,
+            currentPeriodStart: status.subscription.currentPeriodStart || null,
+            currentPeriodEnd: status.subscription.currentPeriodEnd || null
+        }
+        : null;
+
+    return {
+        accountId: status.accountId,
+        accountExists: status.accountExists,
+        subscription,
+        ticketsEntitled: status.ticketsEntitled,
+        blindTicketsIssued: status.blindTicketsIssued,
+        claimableTickets: status.claimableTickets,
+        unclaimedTickets: status.unclaimedTickets,
+        nextClaimableTickets: status.nextClaimableTickets,
+        entitlements: (status.entitlements || []).map(entitlement => ({
+            sourceType: entitlement.sourceType,
+            planId: entitlement.planId,
+            planName: entitlement.planName,
+            periodStart: entitlement.periodStart,
+            periodEnd: entitlement.periodEnd,
+            ticketsEntitled: entitlement.ticketsEntitled,
+            blindTicketsIssued: entitlement.blindTicketsIssued,
+            claimableTickets: entitlement.claimableTickets,
+            status: entitlement.status
+        }))
     };
 }
 
@@ -1641,76 +1001,39 @@ function getNextAccountClaimableEntitlement(accountId) {
         .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))[0] || null;
 }
 
-function allocateEntitlements(email, count, options = {}) {
-    const targetEntitlementId = options.entitlementId || null;
-    const active = Object.values(store.entitlements)
-        .filter(entitlement =>
-            entitlement.email === email &&
-            entitlement.status === 'active' &&
-            entitlement.blindTicketsIssued < entitlement.ticketsEntitled &&
-            (!targetEntitlementId || entitlement.id === targetEntitlementId) &&
-            (targetEntitlementId || !hasTicketLinkForEntitlement(entitlement.id))
-        )
-        .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+function allocateTicketLinkEntitlement(link, count) {
+    const entitlement = store.entitlements?.[link?.entitlementId] || null;
+    if (!entitlement) {
+        return { error: 'Ticket link entitlement was not found.' };
+    }
+    if (entitlement.status !== 'active') {
+        return { error: 'Ticket link entitlement is not active.' };
+    }
 
-    const available = active.reduce((sum, entitlement) =>
-        sum + Math.max(0, entitlement.ticketsEntitled - entitlement.blindTicketsIssued), 0);
-
-    if (available < count) {
+    const claimable = getAccountClaimableTicketCount(entitlement);
+    if (claimable !== count) {
         return {
-            error: `Not enough claimable demo tickets. Need ${count}, but only ${available} remain.`
+            error: `Ticket link requires ${claimable} blinded requests.`
         };
     }
 
-    let remaining = count;
-    const allocations = [];
-    for (const entitlement of active) {
-        if (remaining <= 0) break;
-        const claimable = Math.max(0, entitlement.ticketsEntitled - entitlement.blindTicketsIssued);
-        const issueCount = Math.min(claimable, remaining);
-        entitlement.blindTicketsIssued += issueCount;
-        entitlement.fulfilledAt = entitlement.blindTicketsIssued >= entitlement.ticketsEntitled
-            ? new Date().toISOString()
-            : entitlement.fulfilledAt || null;
-        allocations.push({
+    entitlement.blindTicketsIssued += count;
+    entitlement.fulfilledAt = new Date().toISOString();
+    return {
+        allocations: [{
             entitlementId: entitlement.id,
             planId: entitlement.planId,
             planName: entitlement.planName,
             stripeInvoiceId: entitlement.stripeInvoiceId,
             periodStart: entitlement.periodStart,
             periodEnd: entitlement.periodEnd,
-            ticketsIssued: issueCount
-        });
-        remaining -= issueCount;
-    }
-
-    return { allocations };
-}
-
-function getManualClaimableTicketCount(entitlement) {
-    if (hasTicketLinkForEntitlement(entitlement?.id)) return 0;
-    return Math.max(0, entitlement.ticketsEntitled - entitlement.blindTicketsIssued);
+            ticketsIssued: count
+        }]
+    };
 }
 
 function getAccountClaimableTicketCount(entitlement) {
     return Math.max(0, entitlement.ticketsEntitled - entitlement.blindTicketsIssued);
-}
-
-function hasTicketLinkForEntitlement(entitlementId) {
-    if (!entitlementId) return false;
-    return Object.values(store.ticketLinks || {}).some(link =>
-        link?.entitlementId === entitlementId
-    );
-}
-
-function buildClaimId(email, blindedRequests) {
-    return crypto
-        .createHash('sha256')
-        .update(JSON.stringify({
-            email,
-            blindedRequests
-        }))
-        .digest('hex');
 }
 
 function buildTicketLinkClaimId(link, blindedRequests) {
@@ -1778,8 +1101,8 @@ function isCompleteReplayableClaim(claim, requestCount) {
         );
 }
 
-function buildClaimResponse(email, claim, options = {}) {
-    const response = {
+function buildTicketClaimResponse(claim, options = {}) {
+    return {
         claim_id: claim.id,
         signed_blinded_responses: claim.signedBlindedResponses || [],
         tickets_issued: Number(claim.ticketsIssued) || 0,
@@ -1787,10 +1110,6 @@ function buildClaimResponse(email, claim, options = {}) {
         allocations: claim.allocations || [],
         replayed: options.replayed === true
     };
-    if (options.includeStatus !== false) {
-        response.status = buildStatus(email);
-    }
-    return response;
 }
 
 function buildAccountClaimResponse(accountId, claim, options = {}) {
@@ -1866,7 +1185,7 @@ function ensureSubscriptionTicketLink({ email, accountId = null, entitlementId, 
         : null;
     const link = {
         code,
-        email,
+        email: email || null,
         userId: accountId ? accountUserId(accountId) : demoUserId(email),
         accountId: accountId || null,
         entitlementId,
@@ -1879,40 +1198,6 @@ function ensureSubscriptionTicketLink({ email, accountId = null, entitlementId, 
         stripeSubscriptionId: getInvoiceSubscriptionId(invoice),
         periodStart: periodStart || null,
         periodEnd: periodEnd || null,
-        status: 'issued',
-        createdAt,
-        expiresAt
-    };
-    store.ticketLinks[code] = link;
-    linkCheckoutSessionToTicketLink(link);
-    return link;
-}
-
-function ensureTopupTicketLink({ email, accountId, entitlementId, session, topup, eventCreated }) {
-    const existing = Object.values(store.ticketLinks).find(link =>
-        link.entitlementId === entitlementId
-    );
-    if (existing) return existing;
-
-    const code = generateTicketCode();
-    const createdAt = new Date().toISOString();
-    const expiresAt = Number.isFinite(TICKET_LINK_TTL_DAYS) && TICKET_LINK_TTL_DAYS > 0
-        ? new Date(Date.now() + TICKET_LINK_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString()
-        : null;
-    const link = {
-        code,
-        email,
-        userId: accountId ? accountUserId(accountId) : demoUserId(email),
-        accountId: accountId || null,
-        entitlementId,
-        sourceType: 'topup',
-        planId: topup.id,
-        planName: topup.name,
-        ticketCount: topup.ticketCount,
-        ticketMode: 'demo',
-        stripeCheckoutSessionId: session.id,
-        periodStart: eventCreatedIso(eventCreated),
-        periodEnd: null,
         status: 'issued',
         createdAt,
         expiresAt
@@ -1963,6 +1248,7 @@ async function deliverTicketLinkEmail(link) {
     if (!link) return;
 
     const ticketUrl = buildTicketLinkUrl(link.code);
+    const toEmail = normalizeEmail(link.email);
     if (link.deliveredAt &&
         link.deliveredTicketUrl === ticketUrl &&
         link.deliveryMethod !== 'console-fallback') {
@@ -1980,9 +1266,9 @@ async function deliverTicketLinkEmail(link) {
     ].join('\n');
 
     try {
-        if (SMTP_HOST) {
+        if (SMTP_HOST && toEmail) {
             await sendSmtpMail({
-                to: link.email,
+                to: toEmail,
                 from: SMTP_FROM,
                 subject,
                 text
@@ -1990,7 +1276,7 @@ async function deliverTicketLinkEmail(link) {
             link.deliveryMethod = 'smtp';
         } else {
             logTicketEmail({
-                to: link.email,
+                to: toEmail || '(no email available)',
                 subject,
                 ticketUrl,
                 ticketCount: link.ticketCount
@@ -2003,9 +1289,9 @@ async function deliverTicketLinkEmail(link) {
         link.deliveryError = null;
     } catch (error) {
         link.deliveryError = error.message || 'Unable to deliver ticket link email.';
-        console.warn(`Failed to deliver ticket link email to ${link.email}: ${link.deliveryError}`);
+        console.warn(`Failed to deliver ticket link email to ${toEmail || '(no email available)'}: ${link.deliveryError}`);
         logTicketEmail({
-            to: link.email,
+            to: toEmail || '(no email available)',
             subject,
             ticketUrl,
             ticketCount: link.ticketCount
@@ -2018,24 +1304,6 @@ async function deliverTicketLinkEmail(link) {
         link.deliveryAttempts = (Number(link.deliveryAttempts) || 0) + 1;
         saveStore();
     }
-}
-
-async function getOrCreateStripeCustomer(email) {
-    if (store.customers[email].stripeCustomerId) {
-        return { id: store.customers[email].stripeCustomerId };
-    }
-
-    const customer = await stripeRequest('/v1/customers', {
-        email,
-        metadata: {
-            oa_demo_user_id: demoUserId(email)
-        }
-    });
-
-    store.customers[email].stripeCustomerId = customer.id;
-    saveStore();
-
-    return customer;
 }
 
 function recordCheckoutSession(session, { accountId = null, checkoutType, mode, priceId, ticketCount, checkoutReturnUrls }) {
@@ -2107,9 +1375,6 @@ function isCheckoutSessionCandidateForLink(session, link) {
     if (link.stripeCheckoutSessionId) {
         return link.stripeCheckoutSessionId === session.sessionId;
     }
-    if (link.sourceType === 'topup') {
-        return session.sessionId === link.stripeCheckoutSessionId;
-    }
     if (link.sourceType === 'subscription') {
         if (link.stripeSubscriptionId) {
             return session.checkoutType === 'subscription' &&
@@ -2122,20 +1387,6 @@ function isCheckoutSessionCandidateForLink(session, link) {
                 (link.accountId && accountId && link.accountId === accountId) ||
                 (!link.accountId && link.email && email && link.email === email)
             );
-    }
-    return false;
-}
-
-function isCheckoutSessionAuthorizedForLink(session, link) {
-    if (!session || !link) return false;
-    if (session.checkoutType && link.sourceType && session.checkoutType !== link.sourceType) return false;
-    if (link.sourceType === 'subscription') {
-        return !!link.stripeSubscriptionId &&
-            !!session.stripeSubscriptionId &&
-            link.stripeSubscriptionId === session.stripeSubscriptionId;
-    }
-    if (link.sourceType === 'topup') {
-        return link.stripeCheckoutSessionId === session.sessionId;
     }
     return false;
 }
@@ -2197,19 +1448,6 @@ function isPendingCheckoutExpired(pending) {
 function hasPaidPremiumSubscription(account) {
     const subscription = account?.subscription;
     return ['active', 'trialing'].includes(subscription?.status);
-}
-
-function isKnownTopupCheckoutSession(session, { accountId = null, email = '' } = {}) {
-    const normalizedAccountId = normalizeAccountId(accountId);
-    const normalizedEmail = normalizeEmail(email);
-    const identityMatches = normalizedAccountId
-        ? session.accountId === normalizedAccountId
-        : !!normalizedEmail && normalizeEmail(session.email || session.billingEmail || '') === normalizedEmail;
-    return !!session &&
-        session.checkoutType === 'topup' &&
-        session.mode === 'payment' &&
-        session.priceId === TOPUP_100_PRICE_ID &&
-        identityMatches;
 }
 
 async function stripeRequest(endpoint, params) {
@@ -2464,19 +1702,8 @@ function normalizeInvoiceOverride(value) {
     };
 }
 
-function isValidEmail(email) {
-    return typeof email === 'string' &&
-        email.length > 0 &&
-        email.length <= 254 &&
-        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
 function normalizeTicketCode(code) {
     return typeof code === 'string' ? code.trim().replace(/[\s-]+/g, '').toLowerCase() : '';
-}
-
-function normalizeSessionId(value) {
-    return typeof value === 'string' ? value.trim() : '';
 }
 
 function isConfigured(value, prefix) {

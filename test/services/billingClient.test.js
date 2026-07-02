@@ -6,9 +6,7 @@ import {
     default as billingClient,
     getDefaultBillingApiBaseForHostname,
     getMissingStripeConfig,
-    isBillingEmailValid,
-    normalizeBillingAccountId,
-    normalizeBillingEmail
+    normalizeBillingAccountId
 } from '../../chat/services/billingClient.js';
 
 test('buildTicketExportPayload uses import-compatible ticket shape', () => {
@@ -43,12 +41,6 @@ test('getMissingStripeConfig accepts premium or legacy starter price flags', () 
         webhookSecret: false,
         premiumPriceId: false
     }), ['webhook secret', 'price ID']);
-});
-
-test('billing email normalization is conservative', () => {
-    assert.equal(normalizeBillingEmail('  Alice@Example.COM  '), 'alice@example.com');
-    assert.equal(isBillingEmailValid('alice@example.com'), true);
-    assert.equal(isBillingEmailValid('not-an-email'), false);
 });
 
 test('billing client defaults shared Stripe MVP preview to Render backend', () => {
@@ -87,32 +79,21 @@ test('billing client api base keeps explicit overrides before hostname defaults'
     }
 });
 
-test('billing account checkout calls account-bound product endpoints', async () => {
+test('billing account debug status is read-only', async () => {
     const calls = [];
     const restoreFetch = installFetchMock(async (url, options = {}) => {
         const method = options.method || 'GET';
-        const body = options.body ? JSON.parse(options.body) : null;
-        calls.push({ method, path: url.pathname, search: url.search, body });
-        return jsonResponse({ url: 'https://checkout.stripe.test/session' });
+        calls.push({ method, path: url.pathname, search: url.search });
+        return jsonResponse({ accountId: url.searchParams.get('account_id') });
     });
 
     try {
         assert.equal(normalizeBillingAccountId(' 1234 5678 '), '12345678');
-        await billingClient.getAccountStatus(' 1234 5678 ');
-        await billingClient.checkoutSubscriptionForAccount(' 1234 5678 ');
-        await billingClient.checkoutTopupForAccount(' 1234 5678 ');
-        await billingClient.portalForAccount(' 1234 5678 ');
+        const status = await billingClient.getAccountStatus(' 1234 5678 ');
+        assert.equal(status.accountId, '12345678');
 
         assert.deepEqual(calls.map(call => `${call.method} ${call.path}${call.search}`), [
-            'GET /api/billing/status?account_id=12345678',
-            'POST /api/billing/checkout-subscription',
-            'POST /api/billing/checkout-topup',
-            'POST /api/billing/portal'
-        ]);
-        assert.deepEqual(calls.slice(1).map(call => call.body), [
-            { account_id: '12345678' },
-            { account_id: '12345678' },
-            { account_id: '12345678' }
+            'GET /api/billing/status?account_id=12345678'
         ]);
     } finally {
         restoreFetch();
@@ -167,145 +148,6 @@ test('billing current account calls use local account session header without bod
         ]);
     } finally {
         restoreFetch();
-    }
-});
-
-test('billing client supports email top-up and checkout-session claims', async () => {
-    const calls = [];
-    const restoreFetch = installFetchMock(async (url, options = {}) => {
-        const method = options.method || 'GET';
-        const body = options.body ? JSON.parse(options.body) : null;
-        calls.push({ method, path: url.pathname, search: url.search, body });
-        if (url.pathname === '/api/billing/checkout-session/claim') {
-            return jsonResponse({ pending: true });
-        }
-        return jsonResponse({ url: 'https://checkout.stripe.test/session' });
-    });
-
-    try {
-        await billingClient.checkoutTopup(' Alice@Example.COM ');
-        await billingClient.claimCheckoutSession(' cs_test_123 ', ['blind-one']);
-
-        assert.deepEqual(calls.map(call => `${call.method} ${call.path}${call.search}`), [
-            'POST /api/billing/topup',
-            'POST /api/billing/checkout-session/claim'
-        ]);
-        assert.deepEqual(calls.map(call => call.body), [
-            { email: 'alice@example.com' },
-            { session_id: 'cs_test_123', blinded_requests: ['blind-one'] }
-        ]);
-    } finally {
-        restoreFetch();
-    }
-});
-
-test('billing client stores and clears hidden demo account email', () => {
-    const restore = installLocalStorageMock();
-    try {
-        assert.equal(billingClient.setStoredEmail(' Alice@Example.COM '), 'alice@example.com');
-        assert.equal(billingClient.getStoredEmail(), 'alice@example.com');
-        billingClient.clearStoredEmail();
-        assert.equal(billingClient.getStoredEmail(), '');
-    } finally {
-        restore();
-    }
-});
-
-test('billing client creates hidden demo account when local identity is new', async () => {
-    const restoreStorage = installLocalStorageMock();
-    const calls = [];
-    const restoreFetch = installFetchMock(async (url, options = {}) => {
-        const method = options.method || 'GET';
-        const body = options.body ? JSON.parse(options.body) : null;
-        calls.push({ method, path: url.pathname, body });
-
-        if (method === 'GET' && url.pathname === '/api/billing/status') {
-            return jsonResponse({ accountExists: false });
-        }
-        if (method === 'POST' && url.pathname === '/api/billing/account') {
-            return jsonResponse({
-                email: body.email,
-                accountExists: true,
-                status: { accountExists: true, email: body.email }
-            });
-        }
-        return jsonResponse({ error: 'unexpected request' }, false);
-    });
-
-    try {
-        const result = await billingClient.ensureDemoAccount();
-        assert.match(result.email, /^demo-[a-f0-9]{16}@example\.com$/);
-        assert.equal(result.created, true);
-        assert.equal(result.status.accountExists, true);
-        assert.equal(billingClient.getStoredEmail(), result.email);
-        assert.deepEqual(calls.map(call => `${call.method} ${call.path}`), [
-            'GET /api/billing/status',
-            'POST /api/billing/account'
-        ]);
-        assert.equal(calls[1].body.email, result.email);
-    } finally {
-        restoreFetch();
-        restoreStorage();
-    }
-});
-
-test('billing client treats legacy status without accountExists as usable', async () => {
-    const restoreStorage = installLocalStorageMock();
-    const calls = [];
-    const restoreFetch = installFetchMock(async (url, options = {}) => {
-        const method = options.method || 'GET';
-        const body = options.body ? JSON.parse(options.body) : null;
-        calls.push({ method, path: url.pathname, body });
-
-        if (method === 'GET' && url.pathname === '/api/billing/status') {
-            return jsonResponse({
-                email: url.searchParams.get('email'),
-                userId: 'legacy-user',
-                subscription: null,
-                claimableTickets: 0
-            });
-        }
-        return jsonResponse({ error: 'unexpected request' }, false);
-    });
-
-    try {
-        const result = await billingClient.ensureDemoAccount();
-        assert.equal(result.created, false);
-        assert.equal(result.status.userId, 'legacy-user');
-        assert.deepEqual(calls.map(call => `${call.method} ${call.path}`), [
-            'GET /api/billing/status'
-        ]);
-    } finally {
-        restoreFetch();
-        restoreStorage();
-    }
-});
-
-test('billing client fails closed when hidden demo account identity cannot persist', async () => {
-    const cases = [
-        { throwOnSet: true },
-        { noopSet: true }
-    ];
-
-    for (const options of cases) {
-        const restoreStorage = installLocalStorageMock(options);
-        const calls = [];
-        const restoreFetch = installFetchMock(async (url, options = {}) => {
-            calls.push({ url, options });
-            return jsonResponse({ accountExists: true });
-        });
-
-        try {
-            await assert.rejects(
-                () => billingClient.ensureDemoAccount(),
-                /Unable to persist billing account identity/
-            );
-            assert.equal(calls.length, 0);
-        } finally {
-            restoreFetch();
-            restoreStorage();
-            billingClient.clearStoredEmail();
-        }
     }
 });
 
@@ -553,74 +395,6 @@ test('billing client redeems subscription ticket links into demo ticket JSON', a
     }
 });
 
-test('billing client stores checkout email only after session claim succeeds', async () => {
-    const restoreStorage = installLocalStorageMock();
-    const downloads = [];
-    const restoreDownload = installDownloadMock(downloads);
-    const calls = [];
-    const restoreFetch = installFetchMock(async (url, options = {}) => {
-        const method = options.method || 'GET';
-        const body = options.body ? JSON.parse(options.body) : null;
-        calls.push({ method, path: url.pathname, search: url.search, body });
-
-        if (method === 'GET' && url.pathname === '/api/billing/checkout-session') {
-            assert.equal(url.searchParams.get('session_id'), 'cs_test_session');
-            return jsonResponse({
-                sessionId: 'cs_test_session',
-                status: 'completed',
-                checkoutType: 'subscription',
-                ticketCount: 2
-            });
-        }
-        if (method === 'POST' && url.pathname === '/api/billing/checkout-session/claim') {
-            assert.equal(body.session_id, 'cs_test_session');
-            assert.equal(body.blinded_requests.length, 2);
-            return jsonResponse({
-                ticket_mode: 'demo',
-                ticket_link: undefined,
-                session: {
-                    sessionId: 'cs_test_session',
-                    status: 'completed',
-                    checkoutType: 'subscription',
-                    email: 'buyer@example.com',
-                    billingEmail: 'buyer@example.com',
-                    ticketCount: 2
-                },
-                signed_blinded_responses: [
-                    { index: 0, signed_blinded_response: 'signed-one' },
-                    { index: 1, signed_blinded_response: 'signed-two' }
-                ],
-                allocations: [{
-                    ticketsIssued: 2,
-                    entitlementId: 'entitlement-one',
-                    planId: 'premium',
-                    planName: 'Premium',
-                    stripeInvoiceId: 'in_test'
-                }]
-            });
-        }
-        return jsonResponse({ error: 'unexpected request' }, false, 404);
-    });
-
-    try {
-        const result = await billingClient.redeemCheckoutSession('cs_test_session');
-
-        assert.equal(result.tickets.length, 2);
-        assert.equal(result.session.email, 'buyer@example.com');
-        assert.equal(billingClient.getStoredEmail(), 'buyer@example.com');
-        assert.equal(billingClient.getDemoTicketCount(), 2);
-        assert.equal(downloads.length, 1);
-        assert.deepEqual(calls.map(call => `${call.method} ${call.path}${call.search}`), [
-            'GET /api/billing/checkout-session?session_id=cs_test_session',
-            'POST /api/billing/checkout-session/claim'
-        ]);
-    } finally {
-        restoreFetch();
-        restoreDownload();
-        restoreStorage();
-    }
-});
-
 test('billing client replays saved ticket-link claim after redeemed status', async () => {
     const restoreStorage = installLocalStorageMock();
     const downloads = [];
@@ -715,27 +489,27 @@ test('billing client stores and clears pending claim batches', async () => {
     const restore = installLocalStorageMock();
     try {
         const saved = billingClient.savePendingTicketClaim({
-            email: ' Alice@Example.COM ',
+            key: 'account:12345678',
             requests: [{ token: 'token-one', blindedRequest: 'blind-one' }]
         });
 
-        assert.equal(saved.email, 'alice@example.com');
-        assert.equal(billingClient.getPendingTicketClaim('alice@example.com').requests.length, 1);
+        assert.equal(saved.key, 'account:12345678');
+        assert.equal(billingClient.getPendingTicketClaim('account:12345678').requests.length, 1);
 
-        const existing = await billingClient.getOrCreatePendingTicketClaim('alice@example.com', 2);
+        const existing = await billingClient.getOrCreatePendingTicketClaim('account:12345678', 2);
         assert.equal(existing.requests.length, 1);
 
         billingClient.savePendingTicketClaim({
-            email: 'bob@example.com',
+            key: 'ticket-link:abc123',
             requests: [{ token: 'token-two', blindedRequest: 'blind-two' }]
         });
 
-        billingClient.clearPendingTicketClaim('alice@example.com');
-        assert.equal(billingClient.getPendingTicketClaim('alice@example.com'), null);
-        assert.equal(billingClient.getPendingTicketClaim('bob@example.com').requests.length, 1);
+        billingClient.clearPendingTicketClaim('account:12345678');
+        assert.equal(billingClient.getPendingTicketClaim('account:12345678'), null);
+        assert.equal(billingClient.getPendingTicketClaim('ticket-link:abc123').requests.length, 1);
 
-        billingClient.clearPendingTicketClaim('bob@example.com');
-        assert.equal(billingClient.getPendingTicketClaim('bob@example.com'), null);
+        billingClient.clearPendingTicketClaim('ticket-link:abc123');
+        assert.equal(billingClient.getPendingTicketClaim('ticket-link:abc123'), null);
     } finally {
         restore();
     }
@@ -746,14 +520,14 @@ test('billing client fails closed when pending claim storage is unavailable', as
     try {
         assert.throws(
             () => billingClient.savePendingTicketClaim({
-                email: 'alice@example.com',
+                key: 'account:12345678',
                 requests: [{ token: 'token-one', blindedRequest: 'blind-one' }]
             }),
             /Unable to save pending ticket claim/
         );
 
         await assert.rejects(
-            () => billingClient.getOrCreatePendingTicketClaim('alice@example.com', 1),
+            () => billingClient.getOrCreatePendingTicketClaim('account:12345678', 1),
             /Unable to save pending ticket claim/
         );
     } finally {
@@ -766,7 +540,7 @@ test('billing client verifies pending claim storage round trips', () => {
     try {
         assert.throws(
             () => billingClient.savePendingTicketClaim({
-                email: 'alice@example.com',
+                key: 'account:12345678',
                 requests: [{ token: 'token-one', blindedRequest: 'blind-one' }]
             }),
             /Unable to save pending ticket claim/
