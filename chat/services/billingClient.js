@@ -3,7 +3,6 @@ const STRIPE_SUBSCRIPTION_DEMO_PREVIEW_BILLING_API_BASE = 'https://oa-chat.onren
 const STRIPE_SUBSCRIPTION_DEMO_PREVIEW_HOST_PATTERN = /^oa-chat-git-stripe-subscription-mvp-[a-z0-9-]+\.vercel\.app$/i;
 const API_BASE_KEY = 'oa-billing-api-base';
 const LEGACY_API_BASE_KEY = 'oa-billing-demo-api-base';
-const EMAIL_KEY = 'oa-billing-demo-email';
 const DEMO_TICKET_KEY = 'oa-billing-demo-finalized-tickets';
 const PENDING_CLAIM_KEY = 'oa-billing-pending-ticket-claim';
 const PENDING_CHECKOUT_SESSION_KEY = 'oa-billing-pending-checkout-session';
@@ -19,18 +18,6 @@ export const BILLING_PLAN = {
     ticketsPerPeriod: 500
 };
 
-export const BILLING_TOPUP = {
-    id: 'topup_100',
-    name: 'Add tickets',
-    ticketCount: 100,
-    priceLabel: '$10',
-    description: '100 tickets'
-};
-
-export function normalizeBillingEmail(value) {
-    return typeof value === 'string' ? value.trim().toLowerCase() : '';
-}
-
 export function normalizeBillingAccountId(value) {
     return typeof value === 'string' ? value.trim().replace(/\s+/g, '') : '';
 }
@@ -41,11 +28,6 @@ export function getDefaultBillingApiBaseForHostname(hostname) {
         return STRIPE_SUBSCRIPTION_DEMO_PREVIEW_BILLING_API_BASE;
     }
     return LOCAL_BILLING_API_BASE;
-}
-
-export function isBillingEmailValid(value) {
-    const email = normalizeBillingEmail(value);
-    return email.length > 0 && email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 export function getMissingStripeConfig(configured = {}) {
@@ -79,19 +61,10 @@ export function buildTicketExportPayload(tickets, options = {}) {
 class BillingClient {
     constructor() {
         this.plan = BILLING_PLAN;
-        this.topup = BILLING_TOPUP;
-    }
-
-    normalizeEmail(value) {
-        return normalizeBillingEmail(value);
     }
 
     normalizeAccountId(value) {
         return normalizeBillingAccountId(value);
-    }
-
-    isEmailValid(value) {
-        return isBillingEmailValid(value);
     }
 
     getMissingStripeConfig(configured = {}) {
@@ -115,65 +88,8 @@ class BillingClient {
         return getDefaultBillingApiBaseForHostname(hostname);
     }
 
-    getStoredEmail() {
-        try {
-            return normalizeBillingEmail(localStorage.getItem(EMAIL_KEY) || '');
-        } catch {
-            return '';
-        }
-    }
-
-    setStoredEmail(email) {
-        const normalized = normalizeBillingEmail(email);
-        if (!normalized) return '';
-        try {
-            localStorage.setItem(EMAIL_KEY, normalized);
-        } catch {
-            // Direct setters are best-effort; checkout verifies persistence separately.
-        }
-        return normalized;
-    }
-
-    clearStoredEmail() {
-        try {
-            localStorage.removeItem(EMAIL_KEY);
-        } catch {
-            // Non-fatal; callers also clear their in-memory billing identity.
-        }
-    }
-
-    ensureDemoAccountEmail() {
-        const stored = this.getStoredEmail();
-        if (stored) return stored;
-        const generated = this.setStoredEmail(`demo-${randomHex(8)}@example.com`);
-        if (!generated || this.getStoredEmail() !== generated) {
-            throw new Error('Unable to persist billing account identity. Enable browser storage before checkout.');
-        }
-        return generated;
-    }
-
-    async ensureDemoAccount() {
-        const email = this.ensureDemoAccountEmail();
-        const status = await this.getStatus(email);
-        if (status?.accountExists !== false) {
-            return { email, status, created: false };
-        }
-
-        const data = await this.createAccount(email);
-        return {
-            email,
-            status: data.status || await this.getStatus(email),
-            created: true
-        };
-    }
-
     async health() {
         return this.get('/health');
-    }
-
-    async getStatus(email) {
-        const normalized = normalizeBillingEmail(email);
-        return this.get(`/api/billing/status?email=${encodeURIComponent(normalized)}`);
     }
 
     async getAccountStatus(accountId) {
@@ -188,65 +104,16 @@ class BillingClient {
         return this.get('/api/billing/status', { accountId: normalized });
     }
 
-    async getCheckoutSession(sessionId) {
-        const normalized = normalizeTicketCode(sessionId);
-        return this.get(`/api/billing/checkout-session?session_id=${encodeURIComponent(normalized)}`);
-    }
-
-    async createAccount(email) {
-        return this.post('/api/billing/account', { email: normalizeBillingEmail(email) });
-    }
-
-    async checkout(email) {
-        const normalized = normalizeBillingEmail(email);
-        return this.post('/api/billing/checkout', normalized ? { email: normalized } : {});
-    }
-
     async checkoutForCurrentAccount(accountId) {
         const normalized = normalizeBillingAccountId(accountId);
         if (!normalized) throw new Error('Account is required before checkout.');
         return this.post('/api/billing/checkout', {}, { accountId: normalized });
     }
 
-    async checkoutTopup(email) {
-        const normalized = normalizeBillingEmail(email);
-        if (!normalized) throw new Error('Premium is required before adding tickets.');
-        return this.post('/api/billing/topup', { email: normalized });
-    }
-
-    async checkoutSubscriptionForAccount(accountId) {
-        const normalized = normalizeBillingAccountId(accountId);
-        if (!normalized) throw new Error('Account is required before checkout.');
-        return this.post('/api/billing/checkout-subscription', { account_id: normalized });
-    }
-
-    async checkoutTopupForAccount(accountId) {
-        const normalized = normalizeBillingAccountId(accountId);
-        if (!normalized) throw new Error('Account is required before checkout.');
-        return this.post('/api/billing/checkout-topup', { account_id: normalized });
-    }
-
-    async portal(email) {
-        return this.post('/api/billing/portal', { email: normalizeBillingEmail(email) });
-    }
-
     async portalForCurrentAccount(accountId) {
         const normalized = normalizeBillingAccountId(accountId);
         if (!normalized) throw new Error('Account is required.');
         return this.post('/api/billing/portal', {}, { accountId: normalized });
-    }
-
-    async portalForAccount(accountId) {
-        const normalized = normalizeBillingAccountId(accountId);
-        if (!normalized) throw new Error('Account is required.');
-        return this.post('/api/billing/portal', { account_id: normalized });
-    }
-
-    async claim(email, blindedRequests) {
-        return this.post('/api/tickets/claim', {
-            email: normalizeBillingEmail(email),
-            blinded_requests: Array.isArray(blindedRequests) ? blindedRequests : []
-        });
     }
 
     async claimCurrentAccountTickets(accountId, blindedRequests) {
@@ -267,15 +134,6 @@ class BillingClient {
         const normalized = normalizeTicketCode(code);
         if (!normalized) throw new Error('A ticket link code is required.');
         return this.post(`/api/ticket-links/${encodeURIComponent(normalized)}/claim`, {
-            blinded_requests: Array.isArray(blindedRequests) ? blindedRequests : []
-        });
-    }
-
-    async claimCheckoutSession(sessionId, blindedRequests) {
-        const normalized = normalizeSessionId(sessionId);
-        if (!normalized) throw new Error('A Checkout Session ID is required.');
-        return this.post('/api/billing/checkout-session/claim', {
-            session_id: normalized,
             blinded_requests: Array.isArray(blindedRequests) ? blindedRequests : []
         });
     }
@@ -329,8 +187,8 @@ class BillingClient {
         return requests;
     }
 
-    getPendingTicketClaim(email) {
-        const normalized = normalizeBillingEmail(email);
+    getPendingTicketClaim(key) {
+        const normalized = normalizePendingClaimKey(key);
         if (!normalized) return null;
 
         try {
@@ -350,7 +208,7 @@ class BillingClient {
             const requests = normalizePendingRequests(claim.requests);
             if (requests.length === 0) return null;
             return {
-                email: normalized,
+                key: normalized,
                 count: requests.length,
                 requests,
                 createdAt: claim.createdAt || new Date().toISOString()
@@ -361,21 +219,21 @@ class BillingClient {
     }
 
     savePendingTicketClaim(claim) {
-        const email = normalizeBillingEmail(claim?.email);
+        const key = normalizePendingClaimKey(claim?.key || claim?.email);
         const requests = normalizePendingRequests(claim?.requests);
-        if (!email || requests.length === 0) return null;
+        if (!key || requests.length === 0) return null;
 
         const pending = {
-            email,
+            key,
             count: requests.length,
             requests,
             createdAt: claim.createdAt || new Date().toISOString()
         };
         try {
             const claims = readPendingClaimMap();
-            claims[email] = pending;
+            claims[key] = pending;
             writePendingClaimMap(claims);
-            const confirmed = this.getPendingTicketClaim(email);
+            const confirmed = this.getPendingTicketClaim(key);
             if (!arePendingClaimsEqual(pending, confirmed)) {
                 throw new Error('Pending claim round-trip verification failed.');
             }
@@ -385,13 +243,13 @@ class BillingClient {
         return pending;
     }
 
-    async getOrCreatePendingTicketClaim(email, count) {
-        const existing = this.getPendingTicketClaim(email);
+    async getOrCreatePendingTicketClaim(key, count) {
+        const existing = this.getPendingTicketClaim(key);
         if (existing) return existing;
 
         const requests = await this.generateBlindedTicketRequests(count);
         return this.savePendingTicketClaim({
-            email,
+            key,
             requests,
             createdAt: new Date().toISOString()
         });
@@ -401,16 +259,8 @@ class BillingClient {
         return this.getPendingTicketClaim(getTicketLinkPendingKey(code));
     }
 
-    getPendingCheckoutSessionClaim(sessionId) {
-        return this.getPendingTicketClaim(getCheckoutSessionPendingKey(sessionId));
-    }
-
     async getOrCreatePendingTicketLinkClaim(code, count) {
         return this.getOrCreatePendingTicketClaim(getTicketLinkPendingKey(code), count);
-    }
-
-    async getOrCreatePendingCheckoutSessionClaim(sessionId, count) {
-        return this.getOrCreatePendingTicketClaim(getCheckoutSessionPendingKey(sessionId), count);
     }
 
     getPendingAccountTicketClaim(accountId) {
@@ -425,16 +275,12 @@ class BillingClient {
         this.clearPendingTicketClaim(getTicketLinkPendingKey(code));
     }
 
-    clearPendingCheckoutSessionClaim(sessionId) {
-        this.clearPendingTicketClaim(getCheckoutSessionPendingKey(sessionId));
-    }
-
     clearPendingAccountTicketClaim(accountId) {
         this.clearPendingTicketClaim(getAccountPendingKey(accountId));
     }
 
-    clearPendingTicketClaim(email) {
-        const normalized = normalizeBillingEmail(email);
+    clearPendingTicketClaim(key) {
+        const normalized = normalizePendingClaimKey(key);
         try {
             const claims = readPendingClaimMap();
             if (!normalized) {
@@ -619,69 +465,6 @@ class BillingClient {
         };
     }
 
-    async redeemCheckoutSession(sessionId, options = {}) {
-        const normalized = normalizeSessionId(sessionId);
-        assertCheckoutClaimActive(options);
-        const session = await this.getCheckoutSession(normalized);
-        assertCheckoutClaimActive(options);
-
-        const pendingClaim = this.getPendingCheckoutSessionClaim(normalized);
-        const ticketCount = Math.max(0, Math.floor(Number(session?.ticketCount || session?.ticket_count) || 0));
-        const fallbackCount = session?.checkoutType === 'topup'
-            ? BILLING_TOPUP.ticketCount
-            : BILLING_PLAN.ticketsPerPeriod;
-        const requestCount = pendingClaim?.requests?.length || ticketCount || fallbackCount;
-        if (requestCount <= 0) {
-            return { pending: true, session };
-        }
-
-        const claim = pendingClaim || await this.getOrCreatePendingCheckoutSessionClaim(normalized, requestCount);
-        assertCheckoutClaimActive(options);
-        const claimResponse = await this.claimCheckoutSession(
-            normalized,
-            claim.requests.map(request => request.blindedRequest)
-        );
-        assertCheckoutClaimActive(options);
-        if (claimResponse?.pending) {
-            const pendingSession = claimResponse.session || session;
-            const email = normalizeBillingEmail(pendingSession?.email || pendingSession?.billingEmail || '');
-            if (email) this.setStoredEmail(email);
-            return { pending: true, session: pendingSession, claim };
-        }
-
-        const claimSession = claimResponse?.session || session;
-        const email = normalizeBillingEmail(claimSession?.email || claimSession?.billingEmail || '');
-        if (email) this.setStoredEmail(email);
-
-        const { ticketMode, tickets, payload } = await this.buildTicketPayloadFromClaim({
-            requests: claim.requests,
-            claimResponse,
-            status: claimResponse.status || null
-        });
-
-        assertCheckoutClaimActive(options);
-        if (tickets.length === 0) {
-            throw new Error('No tickets were returned for this Checkout Session.');
-        }
-        if (this.isProductionTicketPayload(ticketMode)) {
-            throw new Error('Production subscription tickets are not enabled yet.');
-        }
-        if (!this.downloadTicketPayload(payload)) {
-            throw new Error('Unable to start the ticket download in this browser.');
-        }
-
-        this.addDemoTickets(tickets);
-        this.clearPendingCheckoutSessionClaim(normalized);
-        this.clearPendingCheckoutSession();
-        return {
-            sessionId: normalized,
-            session: claimSession,
-            ticketMode,
-            tickets,
-            payload
-        };
-    }
-
     getPendingCheckoutSession() {
         try {
             return normalizeSessionId(localStorage.getItem(PENDING_CHECKOUT_SESSION_KEY) || '');
@@ -823,26 +606,18 @@ function normalizeSessionId(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
-function assertCheckoutClaimActive(options = {}) {
-    if (typeof options?.shouldContinue !== 'function' || options.shouldContinue()) return;
-    const error = new Error('Checkout Session claim was reset.');
-    error.name = 'AbortError';
-    throw error;
-}
-
 function getTicketLinkPendingKey(code) {
     const normalized = normalizeTicketCode(code);
     return normalized ? `ticket-link:${normalized.toLowerCase()}` : '';
 }
 
-function getCheckoutSessionPendingKey(sessionId) {
-    const normalized = normalizeSessionId(sessionId);
-    return normalized ? `checkout-session:${normalized.toLowerCase()}` : '';
-}
-
 function getAccountPendingKey(accountId) {
     const normalized = normalizeBillingAccountId(accountId);
     return normalized ? `account:${normalized.toLowerCase()}` : '';
+}
+
+function normalizePendingClaimKey(value) {
+    return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
 function readPendingClaimMap() {
@@ -852,17 +627,17 @@ function readPendingClaimMap() {
     const rawClaims = parsed.claims && typeof parsed.claims === 'object'
         ? parsed.claims
         : parsed.email
-            ? { [normalizeBillingEmail(parsed.email)]: parsed }
+            ? { [normalizePendingClaimKey(parsed.email)]: parsed }
             : {};
 
     return Object.fromEntries(
         Object.entries(rawClaims)
             .map(([key, claim]) => {
-                const email = normalizeBillingEmail(claim?.email || key);
+                const claimKey = normalizePendingClaimKey(claim?.key || claim?.email || key);
                 const requests = normalizePendingRequests(claim?.requests);
-                if (!email || requests.length === 0) return null;
-                return [email, {
-                    email,
+                if (!claimKey || requests.length === 0) return null;
+                return [claimKey, {
+                    key: claimKey,
                     count: requests.length,
                     requests,
                     createdAt: claim.createdAt || new Date().toISOString()
@@ -888,7 +663,7 @@ function writePendingClaimMap(claims) {
 
 function arePendingClaimsEqual(expected, actual) {
     if (!expected || !actual) return false;
-    if (normalizeBillingEmail(expected.email) !== normalizeBillingEmail(actual.email)) return false;
+    if (normalizePendingClaimKey(expected.key || expected.email) !== normalizePendingClaimKey(actual.key || actual.email)) return false;
     const expectedRequests = normalizePendingRequests(expected.requests);
     const actualRequests = normalizePendingRequests(actual.requests);
     if (expectedRequests.length !== actualRequests.length) return false;

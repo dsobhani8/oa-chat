@@ -224,7 +224,7 @@
             white-space: nowrap;
         }
 
-        .billing-email-row {
+        .billing-account-row {
             display: flex;
             gap: 10px;
             margin-top: 10px;
@@ -557,7 +557,7 @@
                 grid-template-columns: 1fr;
             }
 
-            .billing-email-row {
+            .billing-account-row {
                 flex-direction: column;
             }
 
@@ -605,7 +605,7 @@
                 <div class="billing-privacy-strip" aria-label="Privacy boundary">
                     <div class="billing-privacy-item">
                         <p class="billing-privacy-label">Billing knows account</p>
-                        <p class="billing-privacy-text">Stripe state is tied to this demo email only.</p>
+                        <p class="billing-privacy-text">Stripe state is tied to this demo account ID only.</p>
                     </div>
                     <div class="billing-privacy-item">
                         <p class="billing-privacy-label">Issuer sees blinded requests</p>
@@ -619,15 +619,15 @@
 
                 <div class="billing-account-box">
                     <div class="billing-label-row">
-                        <label class="billing-label" for="email">Demo account email</label>
-                        <span id="account-inline-summary" class="billing-account-summary">Use any test email.</span>
+                        <label class="billing-label" for="account-id">Demo account ID</label>
+                        <span id="account-inline-summary" class="billing-account-summary">Use any test account ID.</span>
                     </div>
-                    <div class="billing-email-row">
-                        <input id="email" class="billing-input" type="email" placeholder="alice@example.com" autocomplete="email">
-                        <button id="save-email" class="billing-primary-button" type="button">Use email</button>
+                    <div class="billing-account-row">
+                        <input id="account-id" class="billing-input" type="text" inputmode="numeric" maxlength="19" placeholder="0000 0000 0000 0000" autocomplete="off">
+                        <button id="use-account" class="billing-primary-button" type="button">Use account</button>
                     </div>
                     <p class="billing-help">
-                        Demo account state is keyed by email. Production auth would replace this account step.
+                        Demo account state is keyed by account ID. Production auth would replace this account step.
                     </p>
                 </div>
             </div>
@@ -691,7 +691,7 @@
                 <div class="billing-section-header">
                     <div>
                         <h2 class="billing-section-title">Entitlements</h2>
-                        <p id="entitlement-summary" class="billing-help">Enter an email to load billing state.</p>
+                        <p id="entitlement-summary" class="billing-help">Enter an account ID to load billing state.</p>
                     </div>
                     <button id="refresh" class="billing-ghost-button" type="button">Refresh</button>
                 </div>
@@ -722,12 +722,13 @@
         const API_BASE = localStorage.getItem('oa-billing-api-base') ||
             localStorage.getItem('oa-billing-demo-api-base') ||
             getDefaultApiBase();
-        const EMAIL_KEY = 'oa-billing-demo-email';
+        const ACCOUNT_KEY = 'oa-billing-demo-account-id';
         const DEMO_TICKET_KEY = 'oa-billing-demo-finalized-tickets';
         const PENDING_CLAIM_KEY = 'oa-billing-pending-ticket-claim';
         const PENDING_CLAIM_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-        const emailInput = document.getElementById('email');
-        const saveEmailButton = document.getElementById('save-email');
+        const DEMO_ACCOUNT_HEADER = 'X-OA-Demo-Account-ID';
+        const accountInput = document.getElementById('account-id');
+        const useAccountButton = document.getElementById('use-account');
         const subscribeButton = document.getElementById('subscribe');
         const manageButton = document.getElementById('manage');
         const claimButton = document.getElementById('claim');
@@ -751,79 +752,68 @@
         let hasLogged = false;
         let serverReady = false;
 
-        emailInput.value = localStorage.getItem(EMAIL_KEY) || '';
+        accountInput.value = formatAccountId(localStorage.getItem(ACCOUNT_KEY) || '');
         updateAccountLabels();
         renderStatus();
 
-        emailInput.addEventListener('input', () => {
+        accountInput.addEventListener('input', () => {
+            accountInput.value = formatAccountId(accountInput.value);
             updateAccountLabels();
             renderStatus();
         });
 
-        saveEmailButton.addEventListener('click', () => runAction(async () => {
-            const email = getEmail();
-            emailInput.value = email;
+        useAccountButton.addEventListener('click', () => runAction(async () => {
+            const accountId = getAccountId();
+            accountInput.value = formatAccountId(accountId);
             updateAccountLabels();
-            log(`Using demo account ${email}`);
-            await ensureAccountExists(email);
+            log(`Using demo account ${formatAccountId(accountId)}`);
             await refreshStatus();
         }));
 
         subscribeButton.addEventListener('click', () => runAction(async () => {
-            const email = getEmail();
-            await ensureAccountExists(email);
-            const data = await post('/api/billing/checkout', { email });
+            const accountId = getAccountId();
+            const data = await post('/api/billing/checkout', {}, accountId);
             window.location.href = data.url;
         }));
 
         manageButton.addEventListener('click', () => runAction(async () => {
-            const email = getEmail();
-            const data = await post('/api/billing/portal', { email });
+            const accountId = getAccountId();
+            const data = await post('/api/billing/portal', {}, accountId);
             window.location.href = data.url;
         }));
 
         claimButton.addEventListener('click', () => runAction(async () => {
-            const email = getEmail();
-            const pendingClaim = getPendingClaim(email);
-            const claimable = currentStatus?.claimableTickets || 0;
+            const accountId = getAccountId();
+            const pendingClaim = getPendingClaim(accountPendingKey(accountId));
+            const claimable = currentStatus?.nextClaimableTickets || currentStatus?.claimableTickets || 0;
             const requestCount = pendingClaim?.requests?.length || claimable;
             if (requestCount <= 0) {
                 log('No claimable tickets for this account.');
                 return;
             }
 
-            const claim = pendingClaim || await createPendingClaim(email, requestCount);
+            const claim = pendingClaim || await createPendingClaim(accountPendingKey(accountId), requestCount);
             const requests = claim.requests;
             log(pendingClaim
                 ? `Retrying ${requests.length} saved blinded requests...`
                 : `Created ${requests.length} local demo tokens and blinded requests.`);
 
-            const data = await post('/api/tickets/claim', {
-                email,
+            const data = await post('/api/billing/tickets/claim', {
                 blinded_requests: requests.map(request => request.blindedRequest)
-            });
+            }, accountId);
 
-            const allocationByResponseIndex = expandAllocations(data.allocations || []);
             const tickets = await Promise.all(data.signed_blinded_responses.map(async (signed) => {
                 const request = requests[signed.index];
                 const finalizedTicket = await sha256(`demo-final:${request.token}:${signed.signed_blinded_response}`);
-                const allocation = allocationByResponseIndex[signed.index] || {};
                 return {
                     finalized_ticket: `demo_${finalizedTicket}`,
-                    issued_at: new Date().toISOString(),
-                    source: 'stripe-billing-demo',
-                    billing_entitlement_id: allocation.entitlementId || null,
-                    billing_plan_id: allocation.planId || null,
-                    billing_plan_name: allocation.planName || null,
-                    billing_invoice_id: allocation.stripeInvoiceId || null,
-                    billing_period_start: allocation.periodStart || null,
-                    billing_period_end: allocation.periodEnd || null
+                    issued_at: new Date().toISOString()
                 };
             }));
 
             addDemoTickets(tickets);
             downloadTicketPayload(tickets);
-            clearPendingClaim(email);
+            clearPendingClaim(accountPendingKey(accountId));
             log(`Stored and downloaded ${tickets.length} finalized demo tickets locally.`);
             currentStatus = data.status;
             renderStatus();
@@ -874,37 +864,20 @@
         async function refreshStatus() {
             updateLocalTicketCount();
             updateAccountLabels();
-            const email = emailInput.value.trim().toLowerCase();
-            if (!email) {
+            const accountId = normalizeAccountId(accountInput.value);
+            if (!accountId) {
                 currentStatus = null;
                 renderStatus();
                 return;
             }
-            currentStatus = await get(`/api/billing/status?email=${encodeURIComponent(email)}`);
+            currentStatus = await get('/api/billing/status', accountId);
             renderStatus();
-        }
-
-        async function ensureAccountExists(email) {
-            if (!email) return null;
-            const status = currentStatus?.email === email
-                ? currentStatus
-                : await get(`/api/billing/status?email=${encodeURIComponent(email)}`);
-            if (status.accountExists) {
-                currentStatus = status;
-                renderStatus();
-                return status;
-            }
-
-            const data = await post('/api/billing/account', { email });
-            currentStatus = data.status || await get(`/api/billing/status?email=${encodeURIComponent(email)}`);
-            log(`Created demo billing account ${email}`);
-            renderStatus();
-            return currentStatus;
         }
 
         function renderStatus() {
-            const claimable = currentStatus?.claimableTickets || 0;
-            const pendingCount = getPendingClaim(emailInput.value)?.requests?.length || 0;
+            const accountId = normalizeAccountId(accountInput.value);
+            const claimable = currentStatus?.nextClaimableTickets || currentStatus?.claimableTickets || 0;
+            const pendingCount = getPendingClaim(accountPendingKey(accountId))?.requests?.length || 0;
             const entitled = currentStatus?.ticketsEntitled || 0;
             const issued = currentStatus?.blindTicketsIssued || 0;
 
@@ -930,10 +903,10 @@
             if (entitlements.length === 0) {
                 const message = currentStatus
                     ? 'No entitlements yet. Subscribe through Stripe test mode first.'
-                    : 'Enter an email to load demo billing state.';
+                    : 'Enter an account ID to load demo billing state.';
                 entitlementSummaryEl.textContent = currentStatus
                     ? 'No monthly ticket entitlement has been created for this demo account.'
-                    : 'Enter an email to load billing state.';
+                    : 'Enter an account ID to load billing state.';
                 entitlementsEl.innerHTML = `<div class="billing-empty">${escapeHtml(message)}</div>`;
                 return;
             }
@@ -974,11 +947,11 @@
         }
 
         function updateAccountLabels() {
-            const email = emailInput.value.trim().toLowerCase();
-            accountSummaryEl.textContent = email || 'No account selected';
-            accountInlineSummaryEl.textContent = email ? `Loaded locally as ${email}` : 'Use any test email.';
-            subscribeButton.disabled = !email || !serverReady;
-            saveEmailButton.disabled = !email;
+            const accountId = normalizeAccountId(accountInput.value);
+            accountSummaryEl.textContent = accountId ? formatAccountId(accountId) : 'No account selected';
+            accountInlineSummaryEl.textContent = accountId ? `Loaded locally as ${formatAccountId(accountId)}` : 'Use any test account ID.';
+            subscribeButton.disabled = !accountId || !serverReady;
+            useAccountButton.disabled = !accountId;
         }
 
         function getMissingStripeConfig(configured = {}) {
@@ -1028,16 +1001,16 @@
             localStorage.setItem(DEMO_TICKET_KEY, JSON.stringify(merged));
         }
 
-        function getPendingClaim(email) {
-            const normalizedEmail = String(email || '').trim().toLowerCase();
-            if (!normalizedEmail) return null;
+        function getPendingClaim(key) {
+            const normalizedKey = normalizePendingKey(key);
+            if (!normalizedKey) return null;
             try {
                 const claims = readPendingClaimMap();
-                const claim = claims[normalizedEmail] || null;
+                const claim = claims[normalizedKey] || null;
                 if (!claim) return null;
                 const createdAt = Date.parse(claim.createdAt || '');
                 if (Number.isFinite(createdAt) && Date.now() - createdAt > PENDING_CLAIM_MAX_AGE_MS) {
-                    delete claims[normalizedEmail];
+                    delete claims[normalizedKey];
                     try {
                         writePendingClaimMap(claims);
                     } catch {
@@ -1048,7 +1021,7 @@
                 const requests = normalizePendingRequests(claim.requests);
                 if (requests.length === 0) return null;
                 return {
-                    email: normalizedEmail,
+                    key: normalizedKey,
                     requests,
                     createdAt: claim.createdAt || new Date().toISOString()
                 };
@@ -1057,8 +1030,8 @@
             }
         }
 
-        async function createPendingClaim(email, count) {
-            const normalizedEmail = String(email || '').trim().toLowerCase();
+        async function createPendingClaim(key, count) {
+            const normalizedKey = normalizePendingKey(key);
             const requests = await Promise.all(Array.from({ length: count }, async () => {
                 const token = randomHex(32);
                 return {
@@ -1067,32 +1040,32 @@
                 };
             }));
             const pending = {
-                email: normalizedEmail,
+                key: normalizedKey,
                 count: requests.length,
                 requests,
                 createdAt: new Date().toISOString()
             };
             const claims = readPendingClaimMap();
-            claims[normalizedEmail] = pending;
+            claims[normalizedKey] = pending;
             writePendingClaimMap(claims);
-            if (!arePendingClaimsEqual(pending, getPendingClaim(normalizedEmail))) {
+            if (!arePendingClaimsEqual(pending, getPendingClaim(normalizedKey))) {
                 throw new Error('Unable to save pending ticket claim for retry. Enable browser storage before claiming tickets.');
             }
             return pending;
         }
 
-        function clearPendingClaim(email) {
-            const normalizedEmail = String(email || '').trim().toLowerCase();
+        function clearPendingClaim(key) {
+            const normalizedKey = normalizePendingKey(key);
             try {
                 const claims = readPendingClaimMap();
-                if (!normalizedEmail) {
+                if (!normalizedKey) {
                     localStorage.removeItem(PENDING_CLAIM_KEY);
                     return;
                 }
-                delete claims[normalizedEmail];
+                delete claims[normalizedKey];
                 writePendingClaimMap(claims);
             } catch {
-                if (!normalizedEmail) {
+                if (!normalizedKey) {
                     localStorage.removeItem(PENDING_CLAIM_KEY);
                 }
             }
@@ -1113,16 +1086,16 @@
             const rawClaims = parsed.claims && typeof parsed.claims === 'object'
                 ? parsed.claims
                 : parsed.email
-                    ? { [String(parsed.email).trim().toLowerCase()]: parsed }
+                    ? { [normalizePendingKey(parsed.email)]: parsed }
                     : {};
             return Object.fromEntries(
                 Object.entries(rawClaims)
                     .map(([key, claim]) => {
-                        const email = String(claim?.email || key || '').trim().toLowerCase();
+                        const claimKey = normalizePendingKey(claim?.key || claim?.email || key);
                         const requests = normalizePendingRequests(claim?.requests);
-                        if (!email || requests.length === 0) return null;
-                        return [email, {
-                            email,
+                        if (!claimKey || requests.length === 0) return null;
+                        return [claimKey, {
+                            key: claimKey,
                             count: requests.length,
                             requests,
                             createdAt: claim.createdAt || new Date().toISOString()
@@ -1148,7 +1121,7 @@
 
         function arePendingClaimsEqual(expected, actual) {
             if (!expected || !actual) return false;
-            if (String(expected.email || '').trim().toLowerCase() !== String(actual.email || '').trim().toLowerCase()) return false;
+            if (normalizePendingKey(expected.key || expected.email) !== normalizePendingKey(actual.key || actual.email)) return false;
             const expectedRequests = normalizePendingRequests(expected.requests);
             const actualRequests = normalizePendingRequests(actual.requests);
             if (expectedRequests.length !== actualRequests.length) return false;
@@ -1186,31 +1159,25 @@
             URL.revokeObjectURL(url);
         }
 
-        function expandAllocations(allocations) {
-            const expanded = [];
-            allocations.forEach(allocation => {
-                const count = Number.isFinite(allocation?.ticketsIssued)
-                    ? allocation.ticketsIssued
-                    : 0;
-                for (let index = 0; index < count; index += 1) {
-                    expanded.push(allocation);
-                }
+        async function get(path, accountId = '') {
+            const response = await fetch(`${API_BASE}${path}`, {
+                headers: buildHeaders(accountId)
             });
-            return expanded;
-        }
-
-        async function get(path) {
-            const response = await fetch(`${API_BASE}${path}`);
             return parseResponse(response);
         }
 
-        async function post(path, body) {
+        async function post(path, body, accountId = '') {
             const response = await fetch(`${API_BASE}${path}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: buildHeaders(accountId, { 'Content-Type': 'application/json' }),
                 body: JSON.stringify(body)
             });
             return parseResponse(response);
+        }
+
+        function buildHeaders(accountId, base = {}) {
+            const normalized = normalizeAccountId(accountId);
+            return normalized ? { ...base, [DEMO_ACCOUNT_HEADER]: normalized } : base;
         }
 
         async function parseResponse(response) {
@@ -1221,13 +1188,31 @@
             return data;
         }
 
-        function getEmail() {
-            const email = emailInput.value.trim().toLowerCase();
-            if (!email) {
-                throw new Error('Enter a demo email first.');
+        function getAccountId() {
+            const accountId = normalizeAccountId(accountInput.value);
+            if (!accountId) {
+                throw new Error('Enter a demo account ID first.');
             }
-            localStorage.setItem(EMAIL_KEY, email);
-            return email;
+            localStorage.setItem(ACCOUNT_KEY, accountId);
+            return accountId;
+        }
+
+        function normalizeAccountId(value) {
+            return String(value || '').replace(/\s+/g, '').replace(/\D/g, '').slice(0, 16);
+        }
+
+        function formatAccountId(value) {
+            const normalized = normalizeAccountId(value);
+            return normalized.match(/.{1,4}/g)?.join(' ') || normalized;
+        }
+
+        function accountPendingKey(accountId) {
+            const normalized = normalizeAccountId(accountId);
+            return normalized ? `account:${normalized.toLowerCase()}` : '';
+        }
+
+        function normalizePendingKey(value) {
+            return String(value || '').trim().toLowerCase();
         }
 
         function randomHex(byteLength) {

@@ -2,6 +2,8 @@
 
 This MVP validates subscription-ticket logistics inside the OA app without
 connecting Stripe to the production org backend or anonymous key-redemption path.
+The backend route contract is documented separately in
+[BILLING_BACKEND_CONTRACT.md](BILLING_BACKEND_CONTRACT.md).
 
 ## Scope
 
@@ -36,9 +38,8 @@ connecting Stripe to the production org backend or anonymous key-redemption path
   tickets as locally loaded through the shared billing client. The debug page
   can still manually claim currently claimable tickets for backend testing.
 - The browser creates local token material, sends only blinded request hashes to
-  `/api/billing/tickets/claim`, `/api/tickets/claim`, or
-  `/api/ticket-links/<code>/claim`, receives fake signed blinded responses, and
-  finalizes demo tickets locally.
+  `/api/billing/tickets/claim` or `/api/ticket-links/<code>/claim`, receives
+  fake signed blinded responses, and finalizes demo tickets locally.
 - In demo mode, finalized fake tickets are stored under
   `oa-billing-demo-finalized-tickets`, not production `inference_tickets`.
 - Demo ticket JSON is ticket-shaped for inspection, but normal ticket import
@@ -80,8 +81,7 @@ links whose last delivery method was `console-fallback`; successful SMTP and
 console-only deliveries are still de-duplicated.
 
 `STRIPE_STARTER_PRICE_ID` is still accepted as a legacy alias for
-`STRIPE_PREMIUM_PRICE_ID`. `STRIPE_TOPUP_100_PRICE_ID` is not required for the
-current product flow; top-up endpoints are debug scaffolding only. The `.env`
+`STRIPE_PREMIUM_PRICE_ID`. Top-up Checkout is not part of this MVP. The `.env`
 file is gitignored. Keep `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`
 backend-only.
 
@@ -227,8 +227,8 @@ short-lived shared demo, it may be deployed as a Render web service with Stripe
 test-mode keys, `BILLING_SERVER_HOST=0.0.0.0`, a persistent demo store, and the
 scoped Stripe MVP Vercel preview frontend pointed at that backend by default.
 Do not treat that as production auth: the demo account ID is the billing
-identity proof, and legacy email/debug endpoints still use permissive CORS for
-browser testing.
+identity proof, and the demo backend still uses permissive CORS for browser
+testing.
 
 Use Stripe's test card:
 
@@ -251,19 +251,20 @@ Premium and unclaimed batches; the server does not push finalized tickets.
 
 On localhost, the Upgrade modal includes a quiet `Demo controls` disclosure with
 `Reset local demo billing`. This clears only browser-local demo billing state:
-stored billing email, pending Checkout Session, pending blinded-claim batches,
-and demo billing tickets. It does not cancel Stripe subscriptions, delete Stripe
-customers, or mutate the demo server store. Use it when you want the popup to
-return to the fresh unsubscribed state without losing the rest of the chat app.
-If a same-browser ticket claim is still running, the reset invalidates that
-claim before it can write local demo tickets or a stored billing email.
+pending Checkout Session, pending blinded-claim batches, and demo billing
+tickets. It does not cancel Stripe subscriptions, delete Stripe customers, or
+mutate the demo server store. Use it when you want the popup to return to the
+fresh unsubscribed state without losing the rest of the chat app. If a
+same-browser ticket claim is still running, the reset invalidates that claim
+before it can write local demo tickets.
 
 Once the current Account has active/trialing/checkout-completed Premium, the
 product endpoint blocks another identical Premium checkout for that account. The
-debug page remains email-based and can still exercise legacy manual flows.
+debug page remains account-ID based and can exercise account status, Checkout,
+Portal, and blinded-claim flows.
 
-The standalone debug page is still email-based and can create/load arbitrary
-demo accounts for backend testing.
+The standalone debug page is account-ID based and can create/load arbitrary demo
+accounts for backend testing.
 
 ## Cross-Device Subscription Test
 
@@ -343,14 +344,11 @@ that batch for retry before spending entitlement, calls
 and clears the pending claim only after the download path and demo storage
 round-trip succeed. If the link claim response is lost, retrying the same link
 reuses the saved blinded requests and the server replays the same signatures.
-Each link can spend only the entitlement created for that specific invoice, and
-manual/debug claims ignore entitlements that already have delivery links so one
-link cannot drain another link's batch. New ticket-link claim IDs include the
-link code, entitlement ID, and blinded request batch without including purchaser
-email, so deliberately reusing the same blinded request batch across two links
-cannot collide with another link's claim or use `claim_id` as an offline email
-oracle. Legacy email-based claim IDs are accepted only for replaying local links
-already marked claimed before this hardening.
+Each link can spend only the entitlement created for that specific invoice. New
+ticket-link claim IDs include the link code, entitlement ID, and blinded request
+batch without including purchaser email, so deliberately reusing the same
+blinded request batch across two links cannot collide with another link's claim
+or use `claim_id` as an offline email oracle.
 If the server already marked the link redeemed but the browser still has that
 saved pending claim, OA retries the saved claim before showing the
 already-redeemed message.
@@ -358,10 +356,6 @@ If the billing server is down, errors, or returns 404 for the code, OA falls
 back to the existing invite/split ticket-code redemption path so legacy ticket
 links still work. If the billing server says the subscription link was already
 redeemed, OA shows a non-error already-redeemed toast.
-
-Top-up checkout code remains in the local demo backend for future experiments,
-but the OA product UI currently exposes only the single Premium subscription
-option.
 
 Webhook ordering is handled defensively for local testing: if `invoice.paid`
 arrives before `checkout.session.completed` and the server cannot resolve the
@@ -375,7 +369,7 @@ enter the normal inference ticket store after real Privacy Pass finalization.
 
 Stripe Billing Portal sessions return to `http://localhost:8091/?billing=portal`.
 The app stays on the main chat page, clears the portal URL parameter, and
-refreshes stored-email billing status. If you use the browser Back button from
+refreshes account billing status. If you use the browser Back button from
 Stripe instead, Upgrade clears the stale `Opening portal...` state when the page
 is restored.
 
@@ -409,14 +403,13 @@ must keep `/api/request_key` accountless and ticket-only.
 ## Claim Retries
 
 Claim flows persist pending local token/blinded-request batches in the
-`oa-billing-pending-ticket-claim` map before calling `/api/tickets/claim` or
-`/api/ticket-links/<code>/claim`. Manual email claims are keyed by email;
-subscription link claims are keyed as `ticket-link:<code>`. They fail closed if
-browser storage cannot round-trip the pending batch, because retry material must
-be durable before paid entitlement is spent. The server derives a deterministic
-claim ID from the billing email and the exact blinded request batch for manual
-email claims; subscription links use the link code, entitlement ID, and exact
-blinded request batch instead. If the browser retries that saved batch after a
-lost response or interrupted download, the server replays the same signed
-blinded responses and does not increment `blindTicketsIssued` again. A different
-blinded batch for an already claimed ticket link is rejected.
+`oa-billing-pending-ticket-claim` map before calling
+`/api/billing/tickets/claim` or `/api/ticket-links/<code>/claim`. Account claims
+are keyed as `account:<account_id>`; subscription link claims are keyed as
+`ticket-link:<code>`. They fail closed if browser storage cannot round-trip the
+pending batch, because retry material must be durable before paid entitlement is
+spent. The server derives deterministic claim IDs from the account/link scope,
+entitlement ID, and exact blinded request batch. If the browser retries that
+saved batch after a lost response or interrupted download, the server replays
+the same signed blinded responses and does not increment `blindTicketsIssued`
+again. A different blinded batch for an already claimed ticket link is rejected.

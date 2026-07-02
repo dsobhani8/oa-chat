@@ -560,7 +560,6 @@ class BillingModal {
         this.pendingCheckoutAfterAccount = false;
         this.pendingCheckoutResumeInFlight = false;
         this.checkoutGeneration += 1;
-        this.billing?.clearStoredEmail?.();
         this.billing?.clearPendingCheckoutSession?.();
         this.billing?.clearPendingTicketClaim?.();
         this.billing?.clearDemoTickets?.();
