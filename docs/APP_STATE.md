@@ -34,10 +34,15 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     the session is not verified yet, the Account modal must show an
     `Account locked` unlock/recovery path instead of the normal logged-in view;
     billing cannot use that account until the session is verified.
+    For shared Stripe MVP demos, the Account modal exposes the same demo account
+    bypass on localhost and on Vercel preview hosts matching
+    `oa-chat-git-stripe-subscription-mvp-*.vercel.app`. That bypass simply
+    treats a browser-stored account ID as verified and sends it to the billing
+    demo backend through `X-OA-Demo-Account-ID`; it is not production auth.
   - Product billing calls use `/api/billing/status`,
     `/api/billing/checkout`, `/api/billing/portal`, and
-    `/api/billing/tickets/claim`. In localhost demo mode, the browser sends the
-    verified local account through `X-OA-Demo-Account-ID` as a stand-in for the
+    `/api/billing/tickets/claim`. In demo-account mode, the browser sends the
+    verified demo account through `X-OA-Demo-Account-ID` as a stand-in for the
     future production session cookie; request bodies do not carry `account_id`
     as proof. Existing email/account-id endpoints remain debug scaffolding.
   - Account billing syncs only Premium state, Stripe customer mapping, portal

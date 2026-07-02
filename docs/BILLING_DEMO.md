@@ -16,9 +16,10 @@ connecting Stripe to the production org backend or anonymous key-redemption path
   Premium status and unclaimed paid batches can be recovered on another device.
 - The product flow is account-scoped. The app does not ask for a billing email;
   Stripe Checkout collects it, while the billing demo server maps the Stripe
-  customer/subscription to the current OA account. On localhost, the browser
-  sends `X-OA-Demo-Account-ID` as a stand-in for a future production session
-  cookie. Product request bodies do not carry `account_id` as proof.
+  customer/subscription to the current OA account. On allowed demo origins
+  (localhost and the scoped Stripe MVP Vercel preview), the browser sends
+  `X-OA-Demo-Account-ID` as a stand-in for a future production session cookie.
+  Product request bodies do not carry `account_id` as proof.
 - After successful Checkout, the user returns to the main OA chat page. The app
   refreshes account billing status until Premium or unclaimed tickets appear.
   It does not auto-install tickets from the Stripe redirect. When the webhook
@@ -136,9 +137,12 @@ Open the OA app and click `Upgrade`:
 http://localhost:8091
 ```
 
-For the product flow, first create or unlock Account. On localhost, `Account`
-has a `Use local test account` option so you can test cross-device subscription
-sync without production passkey auth.
+For the product flow, first create or unlock Account. On localhost, and on
+Vercel preview hosts matching
+`oa-chat-git-stripe-subscription-mvp-*.vercel.app`, `Account` has a
+`Use local test account` option so you can test cross-device subscription sync
+without production passkey auth. This is a demo-only identity: anyone with the
+same account ID can see that demo account's billing state.
 
 Stripe Checkout returns to:
 
@@ -207,10 +211,12 @@ server. If you change `BILLING_SERVER_PORT`, set a matching browser override:
 localStorage.setItem('oa-billing-api-base', 'http://localhost:YOUR_PORT')
 ```
 
-Keep the demo billing server bound to localhost. The product billing identity is
-the local Account session header, and legacy email/debug endpoints still use
-permissive CORS for local browser testing; do not bind it to `0.0.0.0` or
-deploy it as a public service.
+For local development, keep the demo billing server bound to localhost. For a
+short-lived shared demo, it may be deployed as a Render web service with Stripe
+test-mode keys, `BILLING_SERVER_HOST=0.0.0.0`, a persistent demo store, and the
+Vercel preview frontend pointed at that backend. Do not treat that as production
+auth: the demo account ID is the billing identity proof, and legacy email/debug
+endpoints still use permissive CORS for browser testing.
 
 Use Stripe's test card:
 

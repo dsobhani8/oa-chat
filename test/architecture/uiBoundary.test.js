@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const repoRoot = process.cwd();
 
@@ -898,13 +899,15 @@ test('billing client and demo server support hidden demo accounts', () => {
     assert.equal(debugPage.includes('await ensureAccountExists(email);'), true);
 });
 
-test('account modal exposes localhost-only billing test account bypass', () => {
+test('account modal exposes scoped billing demo account bypass', async () => {
     const modalSource = read('chat/components/AccountModal.js');
     const serviceSource = read('chat/services/accountService.js');
+    const accountServiceUrl = pathToFileURL(path.join(repoRoot, 'chat/services/accountService.js')).href;
+    const { isDemoAccountHostname } = await import(accountServiceUrl);
 
     assert.equal(modalSource.includes('Use local test account'), true);
-    assert.equal(modalSource.includes('Localhost account test identity'), true);
-    assert.equal(modalSource.includes('Use only for local account tests'), true);
+    assert.equal(modalSource.includes('Demo account test identity'), true);
+    assert.equal(modalSource.includes('Use only for local and shared billing demos'), true);
     assert.equal(modalSource.includes('accountId && !state.sessionVerified'), true);
     assert.equal(modalSource.includes('renderLockedAccountUI'), true);
     assert.equal(modalSource.includes('Account locked'), true);
@@ -914,13 +917,39 @@ test('account modal exposes localhost-only billing test account bypass', () => {
     assert.equal(modalSource.includes('Manage billing'), false);
     assert.equal(modalSource.includes('createLocalDemoAccount(this.accountInputValue)'), true);
     assert.equal(serviceSource.includes('isLocalhostOrigin()'), true);
+    assert.equal(serviceSource.includes('isStripeSubscriptionDemoPreviewOrigin()'), true);
+    assert.equal(serviceSource.includes('isDemoAccountOrigin()'), true);
+    assert.equal(serviceSource.includes('isDemoAccountHostname(hostname)'), true);
+    assert.equal(serviceSource.includes('oa-chat-git-stripe-subscription-mvp-'), true);
     assert.equal(serviceSource.includes("['localhost', '127.0.0.1', '::1']"), true);
     assert.equal(serviceSource.includes("async createLocalDemoAccount(accountIdInput = '')"), true);
     assert.equal(serviceSource.includes('const accountId = normalizeAccountId(accountIdInput) || generateLocalDemoAccountId();'), true);
-    assert.equal(serviceSource.includes('Local test accounts are only available on localhost.'), true);
+    assert.equal(serviceSource.includes('Demo test accounts are only available on localhost or the Stripe subscription demo preview.'), true);
     assert.equal(serviceSource.includes('localDemoAccount: true'), true);
     assert.equal(serviceSource.includes('sessionVerified: true'), true);
     assert.equal(modalSource.includes('${!isLocalDemo ? `<button id="account-sync-btn"'), true);
+
+    for (const hostname of [
+        'localhost',
+        '127.0.0.1',
+        '::1',
+        '[::1]',
+        'oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app',
+        'OA-CHAT-GIT-STRIPE-SUBSCRIPTION-MVP-DOMINIC-S-S-PROJECTS.VERCEL.APP'
+    ]) {
+        assert.equal(isDemoAccountHostname(hostname), true, `${hostname} should allow demo account bypass`);
+    }
+
+    for (const hostname of [
+        'app.openanonymity.ai',
+        'chat.openanonymity.ai',
+        'oa-chat.onrender.com',
+        'oa-chat-git-council-mode-mvp-dominic-s-s-projects.vercel.app',
+        'oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app.evil.com',
+        'stripe-subscription-mvp-dominic-s-s-projects.vercel.app'
+    ]) {
+        assert.equal(isDemoAccountHostname(hostname), false, `${hostname} should not allow demo account bypass`);
+    }
 });
 
 test('billing subscription ticket links are email-delivered and redeemed client-side', () => {

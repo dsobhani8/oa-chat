@@ -695,7 +695,7 @@ class AccountModal {
                         <div class="flex items-center gap-4 mb-3">
                             <div class="flex items-center gap-1.5">
                                 <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-                                <span class="text-xs text-muted-foreground">${isLocalDemo ? 'Local test account' : 'Logged in'}</span>
+                                <span class="text-xs text-muted-foreground">${isLocalDemo ? 'Demo test account' : 'Logged in'}</span>
                             </div>
                             ${!isLocalDemo ? `
                             <div class="flex items-center gap-1.5">
@@ -707,10 +707,10 @@ class AccountModal {
                         <button id="account-copy-id-btn" class="account-number-text font-mono text-lg tracking-widest text-foreground mb-1 whitespace-nowrap hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer bg-transparent border-none p-0" type="button" title="Copy account ID">
                             ${this.escapeHtml(formattedAccountId)}
                         </button>
-                        <p class="text-[11px] text-muted-foreground">${isLocalDemo ? 'Localhost account test identity' : 'Encrypted sync for tickets & preferences'}</p>
+                        <p class="text-[11px] text-muted-foreground">${isLocalDemo ? 'Demo account test identity' : 'Encrypted sync for tickets & preferences'}</p>
                     </div>
 
-                    <p class="text-[11px] text-muted-foreground text-center mb-3">${isLocalDemo ? 'Use only for local account tests' : 'Chat history sync coming soon'}</p>
+                    <p class="text-[11px] text-muted-foreground text-center mb-3">${isLocalDemo ? 'Use only for local and shared billing demos' : 'Chat history sync coming soon'}</p>
 
                     <div class="flex gap-3">
                         <button id="account-clear-btn" class="btn-ghost-hover flex-1 h-9 rounded-lg text-sm border border-border bg-background text-foreground transition-colors" type="button">

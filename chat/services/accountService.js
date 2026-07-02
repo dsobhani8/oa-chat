@@ -52,6 +52,8 @@ const RATE_LIMIT_BACKOFF_BASE_MS = 1000;    // Base delay, doubles each failure
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const LOCAL_DEMO_ACCOUNT_HOSTNAMES = ['localhost', '127.0.0.1', '::1'];
+const STRIPE_SUBSCRIPTION_DEMO_PREVIEW_HOST_PATTERN = /^oa-chat-git-stripe-subscription-mvp-[a-z0-9-]+\.vercel\.app$/i;
 
 function normalizeAccountId(accountId) {
     if (!accountId) return '';
@@ -66,7 +68,28 @@ function formatAccountId(accountId) {
 
 function isLocalhostOrigin() {
     if (typeof window === 'undefined') return false;
-    return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+    return LOCAL_DEMO_ACCOUNT_HOSTNAMES.includes(normalizeDemoHostname(window.location.hostname));
+}
+
+function normalizeDemoHostname(hostname) {
+    const normalized = (hostname || '').toString().trim().toLowerCase();
+    return normalized === '[::1]' ? '::1' : normalized;
+}
+
+export function isDemoAccountHostname(hostname) {
+    const normalized = normalizeDemoHostname(hostname);
+    return LOCAL_DEMO_ACCOUNT_HOSTNAMES.includes(normalized) ||
+        STRIPE_SUBSCRIPTION_DEMO_PREVIEW_HOST_PATTERN.test(normalized);
+}
+
+function isStripeSubscriptionDemoPreviewOrigin() {
+    if (typeof window === 'undefined') return false;
+    return STRIPE_SUBSCRIPTION_DEMO_PREVIEW_HOST_PATTERN.test(normalizeDemoHostname(window.location.hostname));
+}
+
+function isDemoAccountOrigin() {
+    if (typeof window === 'undefined') return false;
+    return isDemoAccountHostname(window.location.hostname);
 }
 
 function generateLocalDemoAccountId() {
@@ -747,7 +770,7 @@ class AccountService {
             this.state.recoveryConfirmed = !!settings.recoveryConfirmed;
             this.state.localDemoAccount = !!settings.localDemoAccount;
 
-            if (this.state.localDemoAccount && isLocalhostOrigin()) {
+            if (this.state.localDemoAccount && isDemoAccountOrigin()) {
                 this.masterKey = crypto.getRandomValues(new Uint8Array(32));
                 this.state.sessionVerified = true;
                 this.state.isReady = true;
@@ -823,12 +846,12 @@ class AccountService {
     }
 
     isLocalDemoAccountAvailable() {
-        return isLocalhostOrigin();
+        return isDemoAccountOrigin();
     }
 
     async createLocalDemoAccount(accountIdInput = '') {
         if (!this.isLocalDemoAccountAvailable()) {
-            throw new Error('Local test accounts are only available on localhost.');
+            throw new Error('Demo test accounts are only available on localhost or the Stripe subscription demo preview.');
         }
 
         const accountId = normalizeAccountId(accountIdInput) || generateLocalDemoAccountId();
