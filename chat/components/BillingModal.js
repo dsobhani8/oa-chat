@@ -435,9 +435,23 @@ class BillingModal {
         this.busyAction = 'checkout';
         this.clearError();
         this.notice = null;
-        this.app?.accountModal?.close?.();
-        this.open({ skipRefresh: true, notice: 'Account ready. Opening Stripe...' });
         try {
+            const accountModal = this.app?.accountModal;
+            let completedTransition = true;
+            if (accountModal?.showBillingCheckoutTransition) {
+                completedTransition = await accountModal.showBillingCheckoutTransition({
+                    accountId: normalizedAccountId,
+                    delayMs: 900
+                });
+            }
+            if (!completedTransition || this.getVerifiedAccountId() !== normalizedAccountId) {
+                accountModal?.clearBillingCheckoutTransition?.(false);
+                this.busyAction = null;
+                if (this.isOpen) this.render();
+                return;
+            }
+            accountModal?.close?.();
+            this.open({ skipRefresh: true, notice: 'Account ready. Opening Stripe...' });
             await this.startCheckout({ accountId: normalizedAccountId });
         } finally {
             this.pendingCheckoutResumeInFlight = false;

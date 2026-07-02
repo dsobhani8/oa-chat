@@ -795,6 +795,9 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes("this.close({ preservePendingCheckout: true });"), true);
     assert.equal(source.includes("this.notice = 'Account ready. Opening Stripe...';"), false);
     assert.equal(source.includes("this.open({ skipRefresh: true, notice: 'Account ready. Opening Stripe...' });"), true);
+    assert.equal(source.includes('showBillingCheckoutTransition({'), true);
+    assert.equal(source.includes('delayMs: 900'), true);
+    assert.equal(source.includes('!completedTransition || this.getVerifiedAccountId() !== normalizedAccountId'), true);
     assert.equal(source.includes('accountModal.open({'), true);
     assert.equal(source.includes('Sign in or create an account to continue.'), false);
     assert.equal(source.includes('Payment is finishing. Tickets will appear when Stripe is ready.'), true);
@@ -924,6 +927,12 @@ test('account modal exposes scoped billing demo account bypass', async () => {
     assert.equal(modalSource.includes('this.closeCallback = typeof options.onClose ==='), true);
     assert.equal(modalSource.includes('closeCallback({ context: closeContext, verified });'), true);
     assert.equal(modalSource.includes("this.openContext === 'billing-checkout'"), true);
+    assert.equal(modalSource.includes('BILLING_CHECKOUT_TRANSITION_DELAY_MS = 900'), true);
+    assert.equal(modalSource.includes('billingCheckoutTransition'), true);
+    assert.equal(modalSource.includes('showBillingCheckoutTransition'), true);
+    assert.equal(modalSource.includes('renderBillingCheckoutTransition'), true);
+    assert.equal(modalSource.includes('Account created'), true);
+    assert.equal(modalSource.includes('Opening Stripe...'), true);
     assert.equal(modalSource.includes('Continue to Premium'), true);
     assert.equal(modalSource.includes('Create or open Account to continue to Stripe. Premium and unclaimed tickets stay available across devices.'), true);
     assert.equal(modalSource.includes('Unlock this account to continue to Stripe and use billing across devices.'), true);

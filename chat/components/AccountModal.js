@@ -4,6 +4,7 @@
  */
 
 const MODAL_CLASSES = 'w-full max-w-sm rounded-xl border border-border bg-background shadow-2xl p-5 mx-4 flex flex-col';
+const BILLING_CHECKOUT_TRANSITION_DELAY_MS = 900;
 
 class AccountModal {
     constructor(app) {
@@ -43,10 +44,21 @@ class AccountModal {
         this.escapeHandler = null;
         this.openContext = null;
         this.closeCallback = null;
+        this.billingCheckoutTransition = false;
+        this.billingCheckoutTransitionTimer = null;
+        this.billingCheckoutTransitionResolve = null;
+        this.billingCheckoutTransitionPromise = null;
+        this.billingCheckoutTransitionAccountId = '';
 
         this.accountUnsubscribe = this.accountService.subscribe(state => {
+            const wasVerified = !!this.getVerifiedAccountId();
             this.accountState = state;
+            const verifiedAccountId = this.getVerifiedAccountId();
             this.updateTabIndicator();
+            if (!wasVerified && verifiedAccountId && this.isOpen && this.openContext === 'billing-checkout') {
+                void this.showBillingCheckoutTransition({ accountId: verifiedAccountId });
+                return;
+            }
             if (this.isOpen && (this.creationStep === 'idle' || this.creationStep === 'complete')) {
                 this.render();
             }
@@ -115,6 +127,9 @@ class AccountModal {
     }
 
     handleCloseAttempt() {
+        if (this.billingCheckoutTransition) {
+            return;
+        }
         // Don't allow closing during recovery step - user must save their codes
         if (this.creationStep === 'recovery') {
             return;
@@ -134,6 +149,7 @@ class AccountModal {
         this.overlay.classList.add('hidden');
         this.overlay.innerHTML = '';
         this.clearAnimationTimeouts();
+        this.clearBillingCheckoutTransition(false);
         this.openContext = null;
         this.closeCallback = null;
 
@@ -165,6 +181,53 @@ class AccountModal {
     clearAnimationTimeouts() {
         this.animationTimeouts.forEach(id => clearTimeout(id));
         this.animationTimeouts = [];
+    }
+
+    clearBillingCheckoutTransition(result = false) {
+        if (this.billingCheckoutTransitionTimer) {
+            clearTimeout(this.billingCheckoutTransitionTimer);
+            this.billingCheckoutTransitionTimer = null;
+        }
+        const resolve = this.billingCheckoutTransitionResolve;
+        this.billingCheckoutTransition = false;
+        this.billingCheckoutTransitionResolve = null;
+        this.billingCheckoutTransitionPromise = null;
+        this.billingCheckoutTransitionAccountId = '';
+        if (resolve) {
+            resolve(result);
+        }
+    }
+
+    showBillingCheckoutTransition({ accountId, delayMs = BILLING_CHECKOUT_TRANSITION_DELAY_MS } = {}) {
+        if (this.openContext !== 'billing-checkout' || !this.isOpen) {
+            return Promise.resolve(false);
+        }
+        const verifiedAccountId = String(accountId || this.getVerifiedAccountId() || '').trim();
+        if (!verifiedAccountId) {
+            return Promise.resolve(false);
+        }
+        if (this.billingCheckoutTransitionPromise) {
+            return this.billingCheckoutTransitionPromise;
+        }
+        if (this.billingCheckoutTransition) {
+            return Promise.resolve(true);
+        }
+
+        this.billingCheckoutTransition = true;
+        this.billingCheckoutTransitionAccountId = verifiedAccountId;
+        this.render();
+
+        const delay = Math.max(0, Number(delayMs) || 0);
+        this.billingCheckoutTransitionPromise = new Promise(resolve => {
+            this.billingCheckoutTransitionResolve = resolve;
+            this.billingCheckoutTransitionTimer = setTimeout(() => {
+                this.billingCheckoutTransitionTimer = null;
+                this.billingCheckoutTransitionResolve = null;
+                this.billingCheckoutTransitionPromise = null;
+                resolve(true);
+            }, delay);
+        });
+        return this.billingCheckoutTransitionPromise;
     }
 
     escapeHtml(text) {
@@ -433,7 +496,9 @@ class AccountModal {
         const state = this.accountState || {};
         const accountId = state.accountId;
 
-        if (this.creationStep !== 'idle' && !accountId) {
+        if (this.billingCheckoutTransition) {
+            this.overlay.innerHTML = this.renderBillingCheckoutTransition();
+        } else if (this.creationStep !== 'idle' && !accountId) {
             this.overlay.innerHTML = this.renderCreationFlow();
         } else {
             this.overlay.innerHTML = this.renderAccountUI();
@@ -453,6 +518,29 @@ class AccountModal {
                         </svg>
                     </button>
                 ` : ''}
+            </div>
+        `;
+    }
+
+    renderBillingCheckoutTransition() {
+        const formattedAccountId = this.formatAccountId(this.billingCheckoutTransitionAccountId || this.getVerifiedAccountId());
+        return `
+            <div role="dialog" aria-modal="true" class="${MODAL_CLASSES}">
+                <div class="flex-1 flex flex-col items-center justify-center py-7 text-center">
+                    <div class="w-14 h-14 bg-emerald-100 dark:bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-7 h-7 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                    </div>
+                    <p class="text-base font-medium text-foreground mb-1">Account created</p>
+                    <p class="account-number-text font-mono text-sm text-muted-foreground mb-5 whitespace-nowrap">
+                        ${this.escapeHtml(formattedAccountId)}
+                    </p>
+                    <div class="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                        <span class="w-3.5 h-3.5 border-2 border-muted-foreground/40 border-t-muted-foreground rounded-full animate-spin" aria-hidden="true"></span>
+                        <span>Opening Stripe...</span>
+                    </div>
+                </div>
             </div>
         `;
     }
@@ -1167,6 +1255,7 @@ class AccountModal {
 
     destroy() {
         this.clearAnimationTimeouts();
+        this.clearBillingCheckoutTransition(false);
         if (this.accountUnsubscribe) {
             this.accountUnsubscribe();
             this.accountUnsubscribe = null;

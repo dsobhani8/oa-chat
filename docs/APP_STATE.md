@@ -31,7 +31,11 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     unlocked/server-verified, the compact modal still shows the Premium plan and
     its primary `Upgrade` action. Clicking it stores a temporary checkout intent,
     opens Account with `Continue to Premium` copy, and resumes Stripe Checkout
-    automatically once Account becomes verified. Closing Account before
+    automatically once Account becomes verified. During that Upgrade handoff,
+    Account briefly shows `Account created`, the formatted account ID, and
+    `Opening Stripe...` for about 900ms before Billing reopens and starts
+    Stripe Checkout. Normal Account opens do not show this transition.
+    Closing Account before
     verification cancels only that pending checkout intent. The product modal
     does not collect email and does not expose raw account-linking mechanics. If
     an account ID is stored locally but the session is not verified yet, the

@@ -140,7 +140,9 @@ http://localhost:8091
 For the product flow, click `Upgrade`, then click the Premium modal's
 `Upgrade` action. If no Account is verified yet, the app opens Account with
 `Continue to Premium` copy; after you create, unlock, or use a local test
-account, the app resumes Stripe Checkout automatically. On localhost, and on
+account, Account briefly confirms `Account created`, shows the formatted account
+ID, and then shows `Opening Stripe...` before the app resumes Stripe Checkout
+automatically. On localhost, and on
 Vercel preview hosts matching
 `oa-chat-git-stripe-subscription-mvp-*.vercel.app`, `Account` has a
 `Use local test account` option so you can test cross-device subscription sync
