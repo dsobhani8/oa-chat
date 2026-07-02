@@ -24,6 +24,9 @@ class BillingModal {
         this.closeTimer = null;
         this.renderOpeningAnimation = false;
         this.localResetGeneration = 0;
+        this.pendingCheckoutAfterAccount = false;
+        this.pendingCheckoutResumeInFlight = false;
+        this.checkoutGeneration = 0;
 
         this.accountUnsubscribe = this.account?.subscribe?.(state => {
             this.handleAccountStateChange(state);
@@ -82,6 +85,9 @@ class BillingModal {
         if (verifiedAccountChanged || verifiedAccountCleared) {
             this.localResetGeneration += 1;
             this.checkoutSessionClaimsInFlight.clear();
+            this.pendingCheckoutAfterAccount = false;
+            this.pendingCheckoutResumeInFlight = false;
+            this.checkoutGeneration += 1;
             this.billing?.clearPendingCheckoutSession?.();
             this.billing?.clearPendingTicketClaim?.();
             this.status = null;
@@ -97,6 +103,9 @@ class BillingModal {
             const pendingSessionId = this.billing?.getPendingCheckoutSession?.();
             if (pendingSessionId) {
                 void this.handleReturnedCheckout(pendingSessionId, { fromStoredSession: true });
+            }
+            if (this.pendingCheckoutAfterAccount) {
+                void this.resumeCheckoutAfterAccount(nextAccountId);
             }
         }
     }
@@ -139,7 +148,7 @@ class BillingModal {
         }
     }
 
-    close() {
+    close(options = {}) {
         if (!this.isOpen || !this.overlay) return;
         this.isOpen = false;
         if (this.tabBtn) {
@@ -148,6 +157,9 @@ class BillingModal {
         if (this.escapeHandler) {
             document.removeEventListener('keydown', this.escapeHandler);
             this.escapeHandler = null;
+        }
+        if (this.pendingCheckoutAfterAccount && !options.preservePendingCheckout) {
+            this.cancelPendingCheckoutAfterAccount();
         }
         this.overlay.classList.remove('billing-modal-open');
         this.overlay.classList.add('billing-modal-closing');
@@ -331,17 +343,19 @@ class BillingModal {
         await this.startCheckout();
     }
 
-    async startCheckout() {
+    async startCheckout(options = {}) {
         if (!this.isServerReady()) {
             this.showCheckoutError('Billing is unavailable right now.');
             return;
         }
 
-        const accountId = this.getVerifiedAccountId();
+        const rawAccountId = options.accountId || this.getVerifiedAccountId();
+        const accountId = this.billing?.normalizeAccountId?.(rawAccountId) || String(rawAccountId || '').trim();
         if (!accountId) {
-            this.handleOpenAccount();
+            this.beginAccountGatedCheckout();
             return;
         }
+        const checkoutGeneration = this.checkoutGeneration;
 
         this.busyAction = 'checkout';
         this.clearError();
@@ -349,6 +363,11 @@ class BillingModal {
         this.render();
         try {
             await this.refreshStatus({ silent: true });
+            if (this.getVerifiedAccountId() !== accountId) {
+                this.busyAction = null;
+                if (this.isOpen) this.render();
+                return;
+            }
             if (this.hasBlockingSubscription()) {
                 this.busyAction = null;
                 if (this.hasCheckoutCompletedSubscription()) {
@@ -358,6 +377,9 @@ class BillingModal {
                 return;
             }
             const data = await this.billing.checkoutForCurrentAccount(accountId);
+            if (this.checkoutGeneration !== checkoutGeneration || this.getVerifiedAccountId() !== accountId) {
+                return;
+            }
             if (data?.alreadySubscribed) {
                 this.status = data.status || this.status;
                 this.statusAccountId = accountId;
@@ -368,6 +390,57 @@ class BillingModal {
             window.location.href = data.url;
         } catch (error) {
             this.showCheckoutError(this.formatBillingError(error, 'Unable to start Stripe Checkout.'));
+        }
+    }
+
+    beginAccountGatedCheckout() {
+        this.pendingCheckoutAfterAccount = true;
+        this.busyAction = 'account';
+        this.clearError();
+        this.notice = 'Create or open Account to continue to Stripe.';
+        if (this.isOpen) this.render();
+        this.close({ preservePendingCheckout: true });
+        const accountModal = this.app?.accountModal;
+        if (!accountModal?.open) {
+            this.cancelPendingCheckoutAfterAccount();
+            this.showCheckoutError('Open Account before upgrading.');
+            return;
+        }
+        accountModal.open({
+            context: 'billing-checkout',
+            onClose: ({ verified } = {}) => {
+                if (!verified) {
+                    this.cancelPendingCheckoutAfterAccount();
+                }
+            }
+        });
+    }
+
+    cancelPendingCheckoutAfterAccount() {
+        this.pendingCheckoutAfterAccount = false;
+        this.checkoutGeneration += 1;
+        if (this.busyAction === 'account') {
+            this.busyAction = null;
+        }
+        if (this.notice === 'Create or open Account to continue to Stripe.') {
+            this.notice = null;
+        }
+    }
+
+    async resumeCheckoutAfterAccount(accountId) {
+        const normalizedAccountId = this.billing?.normalizeAccountId?.(accountId) || String(accountId || '').trim();
+        if (!this.pendingCheckoutAfterAccount || this.pendingCheckoutResumeInFlight || !normalizedAccountId) return;
+        this.pendingCheckoutResumeInFlight = true;
+        this.pendingCheckoutAfterAccount = false;
+        this.busyAction = 'checkout';
+        this.clearError();
+        this.notice = null;
+        this.app?.accountModal?.close?.();
+        this.open({ skipRefresh: true, notice: 'Account ready. Opening Stripe...' });
+        try {
+            await this.startCheckout({ accountId: normalizedAccountId });
+        } finally {
+            this.pendingCheckoutResumeInFlight = false;
         }
     }
 
@@ -470,6 +543,9 @@ class BillingModal {
         if (!this.isLocalBillingDemo()) return;
         this.localResetGeneration += 1;
         this.checkoutSessionClaimsInFlight.clear();
+        this.pendingCheckoutAfterAccount = false;
+        this.pendingCheckoutResumeInFlight = false;
+        this.checkoutGeneration += 1;
         this.billing?.clearStoredEmail?.();
         this.billing?.clearPendingCheckoutSession?.();
         this.billing?.clearPendingTicketClaim?.();
@@ -581,8 +657,9 @@ class BillingModal {
                 <h1 id="billing-modal-title" class="billing-upgrade-title">Upgrade to Premium</h1>
                 <div class="billing-upgrade-price">${this.escapeHtml(this.formatPriceLabel(plan.priceLabel))}</div>
                 <p class="billing-upgrade-entitlement">${this.escapeHtml(this.formatTicketEntitlement(plan.ticketsPerPeriod))}</p>
-                <p class="billing-upgrade-privacy">Sign in with Account to keep Premium and unclaimed ticket batches available across devices.</p>
-                <button id="billing-account-btn" class="billing-upgrade-primary" type="button">Open Account</button>
+                <p class="billing-upgrade-privacy">Create or open Account to continue to Stripe. Billing is separate from inference.</p>
+                <button id="billing-account-btn" class="billing-upgrade-primary" type="button">Upgrade</button>
+                <p class="billing-upgrade-caption">Requires Account before Stripe</p>
             </section>
         `;
     }
@@ -672,7 +749,7 @@ class BillingModal {
         if (checkoutBtn) checkoutBtn.onclick = () => this.handleCheckout();
 
         const accountBtn = this.overlay.querySelector('#billing-account-btn');
-        if (accountBtn) accountBtn.onclick = () => this.handleOpenAccount();
+        if (accountBtn) accountBtn.onclick = () => this.handleCheckout();
 
         const claimBtn = this.overlay.querySelector('#billing-claim-account-btn');
         if (claimBtn) claimBtn.onclick = () => this.handleClaimTickets();

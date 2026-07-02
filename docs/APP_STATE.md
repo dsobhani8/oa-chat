@@ -28,10 +28,14 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
 - 2026-07-01: The product billing path is now account-scoped for
   cross-device subscription continuity.
   - `Upgrade` uses the current verified Account identity. If no account is
-    unlocked/server-verified, the compact modal shows the Premium plan and an
-    `Open Account` action. The product modal does not collect email and does not
-    expose raw account-linking mechanics. If an account ID is stored locally but
-    the session is not verified yet, the Account modal must show an
+    unlocked/server-verified, the compact modal still shows the Premium plan and
+    its primary `Upgrade` action. Clicking it stores a temporary checkout intent,
+    opens Account with `Continue to Premium` copy, and resumes Stripe Checkout
+    automatically once Account becomes verified. Closing Account before
+    verification cancels only that pending checkout intent. The product modal
+    does not collect email and does not expose raw account-linking mechanics. If
+    an account ID is stored locally but the session is not verified yet, the
+    Account modal must show an
     `Account locked` unlock/recovery path instead of the normal logged-in view;
     billing cannot use that account until the session is verified.
     For shared Stripe MVP demos, the Account modal exposes the same demo account

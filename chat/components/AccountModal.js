@@ -41,6 +41,8 @@ class AccountModal {
         // UI state
         this.returnFocusEl = null;
         this.escapeHandler = null;
+        this.openContext = null;
+        this.closeCallback = null;
 
         this.accountUnsubscribe = this.accountService.subscribe(state => {
             this.accountState = state;
@@ -86,8 +88,14 @@ class AccountModal {
         if (label) label.textContent = labelText;
     }
 
-    open() {
-        if (this.isOpen || !this.overlay) return;
+    open(options = {}) {
+        if (!this.overlay) return;
+        this.openContext = options.context || null;
+        this.closeCallback = typeof options.onClose === 'function' ? options.onClose : null;
+        if (this.isOpen) {
+            this.render();
+            return;
+        }
         this.isOpen = true;
         this.returnFocusEl = document.activeElement;
 
@@ -119,10 +127,15 @@ class AccountModal {
 
     close() {
         if (!this.isOpen || !this.overlay) return;
+        const closeCallback = this.closeCallback;
+        const closeContext = this.openContext;
+        const verified = !!this.getVerifiedAccountId();
         this.isOpen = false;
         this.overlay.classList.add('hidden');
         this.overlay.innerHTML = '';
         this.clearAnimationTimeouts();
+        this.openContext = null;
+        this.closeCallback = null;
 
         const tabBtn = document.getElementById('account-tab-btn');
         if (tabBtn) tabBtn.setAttribute('aria-expanded', 'false');
@@ -132,6 +145,9 @@ class AccountModal {
         }
         if (this.returnFocusEl?.focus) this.returnFocusEl.focus();
         this.returnFocusEl = null;
+        if (closeCallback) {
+            closeCallback({ context: closeContext, verified });
+        }
     }
 
     resetCreationFlow() {
@@ -441,6 +457,25 @@ class AccountModal {
         `;
     }
 
+    getContextCopy() {
+        if (this.openContext === 'billing-checkout') {
+            return {
+                title: 'Continue to Premium',
+                description: 'Create or open Account to continue to Stripe. Premium and unclaimed tickets stay available across devices.',
+                createButton: 'Create account',
+                localDemoButton: 'Use local test account',
+                lockedDescription: 'Unlock this account to continue to Stripe and use billing across devices.'
+            };
+        }
+        return {
+            title: 'Account',
+            description: 'Account enables sync across browsers &amp; devices. Your data is locally encrypted with Passkey (<a href="https://www.w3.org/TR/webauthn-3/" target="_blank" rel="noopener noreferrer" class="account-link">WebAuthn</a> with <a href="https://w3c.github.io/webauthn/#prf-extension" target="_blank" rel="noopener noreferrer" class="account-link">PRF extension</a>), so no one but you can decrypt it.',
+            createButton: 'Create new account',
+            localDemoButton: 'Use local test account',
+            lockedDescription: 'Unlock this account to sync and use billing across devices.'
+        };
+    }
+
     renderCreationFlow() {
         const step = this.creationStep;
 
@@ -627,6 +662,7 @@ class AccountModal {
         const action = state.action;
         const localDemoAvailable = !!this.accountService.isLocalDemoAccountAvailable?.();
         const showRecovery = this.showRecoveryInput;
+        const contextCopy = this.getContextCopy();
 
         // Recovery flow UI (verifying/adding passkey)
         if (this.recoveryStep === 'verifying' || this.recoveryStep === 'adding_passkey') {
@@ -644,7 +680,8 @@ class AccountModal {
                 formattedAccountId,
                 passkeySupported,
                 isBusy,
-                showRecovery
+                showRecovery,
+                contextCopy
             });
         }
 
@@ -787,7 +824,7 @@ class AccountModal {
 
                 <!-- Header -->
                 <div class="flex items-center justify-between mb-1">
-                    <h3 class="text-base font-medium text-foreground">${showRecovery ? 'Account Recovery' : 'Account'}</h3>
+                    <h3 class="text-base font-medium text-foreground">${showRecovery ? 'Account Recovery' : this.escapeHtml(contextCopy.title)}</h3>
                     <button id="close-account-modal" class="text-muted-foreground hover:text-foreground transition-colors p-1 -mr-1 rounded-lg hover:bg-accent" aria-label="Close">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"></path>
@@ -797,7 +834,7 @@ class AccountModal {
 
                 <p class="text-xs text-muted-foreground" style="margin-bottom:20px">${showRecovery
                     ? 'Recover your account with the recovery code saved at account creation time.'
-                    : 'Account enables sync across browsers &amp; devices. Your data is locally encrypted with Passkey (<a href="https://www.w3.org/TR/webauthn-3/" target="_blank" rel="noopener noreferrer" class="account-link">WebAuthn</a> with <a href="https://w3c.github.io/webauthn/#prf-extension" target="_blank" rel="noopener noreferrer" class="account-link">PRF extension</a>), so no one but you can decrypt it.'
+                    : contextCopy.description
                 }</p>
 
                 ${!passkeySupported ? `
@@ -812,12 +849,12 @@ class AccountModal {
                         <svg class="w-3.5 h-3.5 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
                         </svg>
-                        Create new account
+                        ${this.escapeHtml(contextCopy.createButton)}
                     </button>
 
                     ${localDemoAvailable ? `
                         <button id="local-demo-account-btn" class="btn-ghost-hover mt-2 w-full h-9 rounded-lg text-xs border border-dashed border-border bg-background text-muted-foreground transition-colors" type="button">
-                            Use local test account
+                            ${this.escapeHtml(contextCopy.localDemoButton)}
                         </button>
                     ` : ''}
 
@@ -891,9 +928,10 @@ class AccountModal {
         `;
     }
 
-    renderLockedAccountUI({ formattedAccountId, passkeySupported, isBusy, showRecovery }) {
+    renderLockedAccountUI({ formattedAccountId, passkeySupported, isBusy, showRecovery, contextCopy }) {
         const state = this.accountState || {};
         const recoveryValue = this.escapeHtml(this.recoveryInputValue || '');
+        const copy = contextCopy || this.getContextCopy();
 
         return `
             <div role="dialog" aria-modal="true" class="${MODAL_CLASSES}">
@@ -920,7 +958,7 @@ class AccountModal {
                         color: hsl(var(--color-foreground));
                     }
                 </style>
-                ${this.renderHeader('Account')}
+                ${this.renderHeader(this.escapeHtml(copy.title))}
                 <div class="flex-1 flex flex-col items-center justify-center py-4">
                     <div class="flex items-center gap-1.5 mb-3">
                         <span class="w-2 h-2 rounded-full bg-amber-500"></span>
@@ -930,7 +968,7 @@ class AccountModal {
                         ${this.escapeHtml(formattedAccountId)}
                     </button>
                     <p class="text-[11px] text-muted-foreground text-center max-w-[260px]">
-                        Unlock this account to sync and use billing across devices.
+                        ${this.escapeHtml(copy.lockedDescription)}
                     </p>
                 </div>
 

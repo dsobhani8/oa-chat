@@ -763,8 +763,8 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes('this.billing.checkoutForCurrentAccount(accountId)'), true);
     assert.equal(source.includes('this.billing.portalForCurrentAccount(accountId)'), true);
     assert.equal(source.includes('this.billing.redeemCurrentAccountTickets(accountId'), true);
-    assert.equal(source.includes('Sign in with Account to keep Premium and unclaimed ticket batches available across devices.'), true);
-    assert.equal(source.includes('Open Account'), true);
+    assert.equal(source.includes('Create or open Account to continue to Stripe. Billing is separate from inference.'), true);
+    assert.equal(source.includes('Requires Account before Stripe'), true);
     assert.equal(source.includes('Premium tickets ready'), true);
     assert.equal(source.includes('unclaimed tickets are available for this account'), true);
     assert.equal(source.includes('billing-claim-account-btn'), true);
@@ -783,8 +783,19 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes('hasCheckoutCompletedSubscription()'), true);
     assert.equal(source.includes("return ['active', 'trialing'].includes(subscription?.status);"), true);
     assert.equal(source.includes('getSignedInAccountId()'), false);
-    assert.equal(source.includes('accountModal'), true);
-    assert.equal(source.includes('this.app?.accountModal?.open?.()'), true);
+    assert.equal(source.includes('pendingCheckoutAfterAccount'), true);
+    assert.equal(source.includes('beginAccountGatedCheckout()'), true);
+    assert.equal(source.includes('resumeCheckoutAfterAccount(accountId)'), true);
+    assert.equal(source.includes('checkoutGeneration'), true);
+    assert.equal(source.includes('const checkoutGeneration = this.checkoutGeneration;'), true);
+    assert.equal(source.includes('this.checkoutGeneration !== checkoutGeneration || this.getVerifiedAccountId() !== accountId'), true);
+    assert.equal(source.includes("context: 'billing-checkout'"), true);
+    assert.equal(source.includes("if (accountBtn) accountBtn.onclick = () => this.handleCheckout();"), true);
+    assert.equal(source.includes("if (accountBtn) accountBtn.onclick = () => this.handleOpenAccount();"), false);
+    assert.equal(source.includes("this.close({ preservePendingCheckout: true });"), true);
+    assert.equal(source.includes("this.notice = 'Account ready. Opening Stripe...';"), false);
+    assert.equal(source.includes("this.open({ skipRefresh: true, notice: 'Account ready. Opening Stripe...' });"), true);
+    assert.equal(source.includes('accountModal.open({'), true);
     assert.equal(source.includes('Sign in or create an account to continue.'), false);
     assert.equal(source.includes('Payment is finishing. Tickets will appear when Stripe is ready.'), true);
     assert.equal(source.includes('Finishing purchase...'), true);
@@ -908,6 +919,14 @@ test('account modal exposes scoped billing demo account bypass', async () => {
     const { isDemoAccountHostname } = await import(accountServiceUrl);
 
     assert.equal(modalSource.includes('Use local test account'), true);
+    assert.equal(modalSource.includes('open(options = {})'), true);
+    assert.equal(modalSource.includes('this.openContext = options.context || null;'), true);
+    assert.equal(modalSource.includes('this.closeCallback = typeof options.onClose ==='), true);
+    assert.equal(modalSource.includes('closeCallback({ context: closeContext, verified });'), true);
+    assert.equal(modalSource.includes("this.openContext === 'billing-checkout'"), true);
+    assert.equal(modalSource.includes('Continue to Premium'), true);
+    assert.equal(modalSource.includes('Create or open Account to continue to Stripe. Premium and unclaimed tickets stay available across devices.'), true);
+    assert.equal(modalSource.includes('Unlock this account to continue to Stripe and use billing across devices.'), true);
     assert.equal(modalSource.includes('Demo account test identity'), true);
     assert.equal(modalSource.includes('Use only for local and shared billing demos'), true);
     assert.equal(modalSource.includes('accountId && !state.sessionVerified'), true);

@@ -137,12 +137,17 @@ Open the OA app and click `Upgrade`:
 http://localhost:8091
 ```
 
-For the product flow, first create or unlock Account. On localhost, and on
+For the product flow, click `Upgrade`, then click the Premium modal's
+`Upgrade` action. If no Account is verified yet, the app opens Account with
+`Continue to Premium` copy; after you create, unlock, or use a local test
+account, the app resumes Stripe Checkout automatically. On localhost, and on
 Vercel preview hosts matching
 `oa-chat-git-stripe-subscription-mvp-*.vercel.app`, `Account` has a
 `Use local test account` option so you can test cross-device subscription sync
 without production passkey auth. This is a demo-only identity: anyone with the
-same account ID can see that demo account's billing state.
+same account ID can see that demo account's billing state. Closing Account
+before creating/unlocking cancels only the pending checkout handoff; you can
+start again from `Upgrade`.
 
 Stripe Checkout returns to:
 
