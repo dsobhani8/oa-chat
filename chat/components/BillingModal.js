@@ -53,6 +53,18 @@ class BillingModal {
             if (!accountId) return;
             const detailAccountId = this.billing?.normalizeAccountId?.(event?.detail?.accountId) || String(event?.detail?.accountId || '').trim();
             if (detailAccountId && detailAccountId !== accountId) return;
+            const detailStatus = event?.detail?.status || null;
+            if (detailStatus) {
+                this.status = detailStatus;
+                this.statusAccountId = accountId;
+                this.clearError('status');
+                this.updateTabIndicator();
+                if (this.isOpen) {
+                    this.maybeHandOffManagedPremiumToAccount();
+                    if (this.isOpen) this.render();
+                }
+                return;
+            }
             void this.refreshStatus({ silent: true }).finally(() => {
                 this.updateTabIndicator();
                 if (this.isOpen) this.render();
@@ -213,6 +225,7 @@ class BillingModal {
             this.setError(error.message || 'Billing server is not reachable.', 'health');
         }
         this.updateTabIndicator();
+        this.maybeHandOffManagedPremiumToAccount(options);
         if (this.isOpen && !options.silent) this.render();
     }
 
@@ -235,10 +248,12 @@ class BillingModal {
             this.status = status;
             this.statusAccountId = accountId;
             this.clearError('status');
+            this.dispatchBillingStatusUpdated();
         } catch (error) {
             this.setError(this.formatBillingError(error, 'Unable to load billing status.'), 'status');
         }
         this.updateTabIndicator();
+        this.maybeHandOffManagedPremiumToAccount(options);
         if (this.isOpen && !options.silent) this.render();
     }
 
@@ -255,6 +270,7 @@ class BillingModal {
             const sessionId = url.searchParams.get('session_id');
             if (sessionId) {
                 this.billing?.setPendingCheckoutSession?.(sessionId);
+                this.updateTabIndicator();
                 this.app?.showToast?.('Payment complete. Checking Premium tickets...', 'success', 5000);
                 void this.handleReturnedCheckout(sessionId);
             } else {
@@ -302,16 +318,16 @@ class BillingModal {
                     await this.refreshStatus({ silent: true });
                     if (this.localResetGeneration !== claimGeneration) return;
                     const status = this.getCurrentStatus();
-                    if (!status || this.hasCheckoutCompletedSubscription()) {
+                    const ticketCount = this.getUnclaimedTicketCount();
+                    if (!status) {
                         sawPending = true;
                         continue;
                     }
-                    if (!this.hasPaidSubscription() && this.getUnclaimedTicketCount() <= 0) {
+                    if (!this.hasPaidSubscription() && ticketCount <= 0) {
                         sawPending = true;
                         continue;
                     }
                     this.billing?.clearPendingCheckoutSession?.(normalizedSessionId);
-                    const ticketCount = this.getUnclaimedTicketCount();
                     this.app?.showToast?.(
                         ticketCount > 0
                             ? `Payment complete. ${ticketCount} Premium tickets are ready to claim.`
@@ -343,6 +359,7 @@ class BillingModal {
 
             if (sawPending) {
                 this.dispatchBillingStatusUpdated();
+                this.updateTabIndicator();
                 if (!options.fromStoredSession) {
                     this.app?.showToast?.(
                         'Payment received. Premium tickets are still being prepared.',
@@ -387,6 +404,11 @@ class BillingModal {
             }
             if (this.hasBlockingSubscription()) {
                 this.busyAction = null;
+                if (this.getUnclaimedTicketCount() > 0) {
+                    this.dispatchBillingStatusUpdated();
+                    this.handleOpenAccount();
+                    return;
+                }
                 if (this.hasCheckoutCompletedSubscription()) {
                     this.notice = 'Payment is finishing. Tickets will appear when Stripe is ready.';
                 }
@@ -498,6 +520,7 @@ class BillingModal {
     }
 
     handleOpenAccount() {
+        this.dispatchBillingStatusUpdated();
         this.close();
         this.app?.accountModal?.open?.();
     }
@@ -557,7 +580,7 @@ class BillingModal {
         const plan = this.billing?.plan || { name: 'Premium', priceLabel: '$35/month', ticketsPerPeriod: 500 };
         const hasAccount = !!this.getVerifiedAccountId();
         const hasPremium = this.hasPaidSubscription();
-        const hasPendingPremium = this.hasCheckoutCompletedSubscription();
+        const hasPendingPremium = this.hasCheckoutCompletedSubscription() || this.hasReturnedCheckoutPending();
         const unclaimedTickets = this.getUnclaimedTicketCount();
         const nextClaimableTickets = this.getNextClaimableTicketCount();
         const dialogClasses = `${DIALOG_BASE_CLASSES}${this.renderOpeningAnimation ? ' billing-upgrade-dialog-enter' : ''}`;
@@ -650,10 +673,10 @@ class BillingModal {
         const nextClaimableTickets = Math.max(0, Math.floor(Number(options.nextClaimableTickets) || 0));
         const unclaimedTickets = Math.max(0, Math.floor(Number(options.unclaimedTickets) || 0));
         const hasPendingPremium = !!options.hasPendingPremium;
-        const detailText = hasPendingPremium
-            ? 'Payment is finishing. Open Account to check status.'
-            : nextClaimableTickets > 0
-                ? `${unclaimedTickets || nextClaimableTickets} Premium tickets are ready in Account.`
+        const detailText = nextClaimableTickets > 0
+            ? `${unclaimedTickets || nextClaimableTickets} Premium tickets are ready in Account.`
+            : hasPendingPremium
+                ? 'Payment is finishing. Open Account to check status.'
                 : 'Premium is managed from Account.';
         return `
             <section class="billing-upgrade-content">
@@ -774,9 +797,21 @@ class BillingModal {
         return this.getCurrentStatus()?.subscription?.status === 'checkout_completed';
     }
 
+    hasReturnedCheckoutPending() {
+        return !!this.getVerifiedAccountId() && !!this.billing?.getPendingCheckoutSession?.();
+    }
+
     shouldHideUpgradeTab() {
-        if (!this.getVerifiedAccountId() || !this.getCurrentStatus()) return false;
+        if (!this.getVerifiedAccountId()) return false;
+        if (this.hasReturnedCheckoutPending()) return true;
+        if (!this.getCurrentStatus()) return false;
         return this.hasBlockingSubscription() || this.getUnclaimedTicketCount() > 0;
+    }
+
+    maybeHandOffManagedPremiumToAccount(options = {}) {
+        if (!this.isOpen || options.silent || this.lastError) return;
+        if (!this.shouldHideUpgradeTab()) return;
+        this.handleOpenAccount();
     }
 
     dispatchBillingStatusUpdated() {
@@ -784,6 +819,7 @@ class BillingModal {
         window.dispatchEvent(new CustomEvent('billing-status-updated', {
             detail: {
                 accountId: this.getVerifiedAccountId(),
+                status: this.getCurrentStatus(),
                 source: 'billing-modal'
             }
         }));

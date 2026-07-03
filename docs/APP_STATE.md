@@ -60,7 +60,16 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     Premium status, `Manage billing`, and `Claim N tickets` then live inside
     Account. The Upgrade modal remains purchase-only; if stale state lets it
     open for an already-Premium account, it points the user back to Account
-    rather than exposing portal or claim controls.
+    rather than exposing portal or claim controls. A successful Stripe return
+    also hides `Upgrade` immediately for the verified account while the stored
+    Checkout Session is being reconciled; this prevents a duplicate-subscription
+    prompt without treating the redirect as ticket proof. Account and Billing
+    share the fetched billing status through the `billing-status-updated` event
+    payload so Account does not render stale `Payment is finishing` copy after
+    Billing has already seen claimable tickets. In mixed states such as
+    `subscription.status === "checkout_completed"` plus `nextClaimableTickets >
+    0`, the claimable ticket batch wins: hide `Upgrade`, clear the pending
+    checkout session, and show `Claim N tickets` in Account.
   - Product billing calls use `/api/billing/status`,
     `/api/billing/checkout`, `/api/billing/portal`, and
     `/api/billing/tickets/claim`. In demo-account mode, the browser sends the
@@ -77,6 +86,15 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     Render demo backend at `https://oa-chat.onrender.com`. A
     `window.OA_BILLING_API_BASE` or `oa-billing-api-base` localStorage override
     still wins for custom backend testing.
+    Checkout and Billing Portal return URLs are per frontend origin. The
+    browser sends `return_origin: window.location.origin` on Checkout/Portal
+    requests; if that body field is absent, the backend falls back to the
+    request's `Origin` header. The backend validates the resolved origin against
+    localhost, the configured app origin, the scoped Stripe MVP Vercel preview
+    host, or `BILLING_ALLOWED_RETURN_ORIGINS` before passing it to Stripe.
+    Pending Checkout Sessions are not reused across different return origins,
+    so a session created from localhost cannot return a Vercel preview user to
+    localhost, and the reverse is also avoided.
   - Account billing syncs only Premium state, Stripe customer mapping, portal
     availability, and unclaimed paid ticket batches. Any signed-in browser with
     the same account can see `Premium active` and claim an unclaimed monthly

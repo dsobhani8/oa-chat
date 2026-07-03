@@ -88,7 +88,17 @@ one batch the browser should claim next.
 Requires authenticated account context. Creates or reuses a Stripe subscription
 Checkout Session for the current account.
 
-Request body is `{}`. The account ID must come from auth/session context.
+Request body may include the browser origin to use for Stripe return URLs:
+
+```json
+{ "return_origin": "https://app.openanonymity.ai" }
+```
+
+The account ID must come from auth/session context. The backend must validate
+`return_origin` against an allowlist before using it in Stripe `success_url` or
+`cancel_url`. If `return_origin` is missing, a browser request may fall back to
+the HTTP `Origin` header after the same validation; non-browser requests can
+fall back to the configured app origin. Do not accept arbitrary return origins.
 
 Response:
 
@@ -105,7 +115,11 @@ creating another identical subscription.
 Requires authenticated account context. Opens Stripe Billing Portal for the
 current account's Stripe customer.
 
-Request body is `{}`.
+Request body may include the validated browser return origin:
+
+```json
+{ "return_origin": "https://app.openanonymity.ai" }
+```
 
 ### `POST /api/billing/tickets/claim`
 

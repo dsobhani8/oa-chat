@@ -65,6 +65,10 @@ STRIPE_PREMIUM_PRICE_ID=price_...
 APP_URL=http://localhost:8091
 BILLING_SERVER_PORT=4242
 
+# Optional for a shared backend. Comma-separated extra frontend origins that may
+# be used as Stripe Checkout/Billing Portal return targets.
+BILLING_ALLOWED_RETURN_ORIGINS=https://your-preview.vercel.app
+
 # Optional. If omitted, ticket-link emails are printed in the billing server log.
 SMTP_HOST=smtp.example.com
 SMTP_PORT=465
@@ -201,10 +205,18 @@ same Stripe URL instead of creating a second subscription. The demo server also
 serializes in-flight Premium Checkout creation per Account so two simultaneous
 requests do not both create Stripe sessions. Once the current Account has
 active/trialing/checkout-completed Premium, the `Upgrade` pill hides and Account
-owns both `Manage billing` and unclaimed ticket claims. If you previously
-created sessions with `APP_URL=http://localhost:8090/billing-demo.html`, restart
-the billing server with the new `APP_URL`; already-open pending Checkout
-Sessions keep the return URL they were created with.
+owns both `Manage billing` and unclaimed ticket claims.
+
+Checkout and Billing Portal returns use the browser's current origin, not a
+single global frontend URL. The frontend sends `window.location.origin` to the
+billing backend; the backend also falls back to the request's `Origin` header
+when that body field is missing. The backend accepts localhost, the configured
+`APP_URL` origin, the scoped Stripe MVP Vercel preview origin, and any origins
+listed in `BILLING_ALLOWED_RETURN_ORIGINS`. `APP_URL` is still the
+fallback/default for server-generated links and non-browser requests. Pending
+Checkout Sessions are reused only when their stored return origin matches the
+browser origin that is requesting Checkout, so a localhost session will not send
+a Vercel user back to localhost.
 
 The standalone page remains available for backend debugging only:
 
@@ -332,11 +344,10 @@ The query-string link shape is intentional for local testing: Python's
 `http.server` serves `index.html` for `/`, but it returns a static-file 404 for
 direct app routes like `/tickets/<code>`.
 
-If `APP_URL` changes from `8091` to `8090`, or the reverse, restart
-`npm run billing:demo` before creating or resending a delivery. Already-created
-ticket links are reprinted or resent on the next delivery attempt when the
-generated link URL changes, so a link originally emitted with the wrong port is
-not silently stuck.
+If ticket-link delivery uses the wrong `APP_URL`, restart `npm run billing:demo`
+before creating or resending a delivery. Already-created ticket links are
+reprinted or resent on the next delivery attempt when the generated link URL
+changes, so a link originally emitted with the wrong port is not silently stuck.
 
 Opening the link in OA first checks `/api/ticket-links/<code>`. When it is a
 subscription link, the browser creates the local blinded request batch, persists

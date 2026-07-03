@@ -107,13 +107,13 @@ class BillingClient {
     async checkoutForCurrentAccount(accountId) {
         const normalized = normalizeBillingAccountId(accountId);
         if (!normalized) throw new Error('Account is required before checkout.');
-        return this.post('/api/billing/checkout', {}, { accountId: normalized });
+        return this.post('/api/billing/checkout', this.buildReturnOriginBody(), { accountId: normalized });
     }
 
     async portalForCurrentAccount(accountId) {
         const normalized = normalizeBillingAccountId(accountId);
         if (!normalized) throw new Error('Account is required.');
-        return this.post('/api/billing/portal', {}, { accountId: normalized });
+        return this.post('/api/billing/portal', this.buildReturnOriginBody(), { accountId: normalized });
     }
 
     async claimCurrentAccountTickets(accountId, blindedRequests) {
@@ -161,6 +161,13 @@ class BillingClient {
             headers[DEMO_ACCOUNT_HEADER] = accountId;
         }
         return headers;
+    }
+
+    buildReturnOriginBody() {
+        const origin = typeof window !== 'undefined' && typeof window.location?.origin === 'string'
+            ? window.location.origin
+            : '';
+        return origin ? { return_origin: origin } : {};
     }
 
     async parseResponse(response) {

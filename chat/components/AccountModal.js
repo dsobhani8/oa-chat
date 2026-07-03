@@ -111,6 +111,15 @@ class AccountModal {
             if (!accountId || event?.detail?.source === 'account-modal') return;
             const detailAccountId = this.billing?.normalizeAccountId?.(event?.detail?.accountId) || String(event?.detail?.accountId || '').trim();
             if (detailAccountId && detailAccountId !== accountId) return;
+            const detailStatus = event?.detail?.status || null;
+            if (detailStatus) {
+                this.billingStatus = detailStatus;
+                this.billingStatusAccountId = accountId;
+                this.billingStatusLoading = false;
+                this.billingStatusError = null;
+                if (this.isOpen) this.render();
+                return;
+            }
             void this.refreshBillingStatus({ silent: true });
         };
         window.addEventListener('billing-status-updated', this.billingStatusUpdatedHandler);
@@ -586,6 +595,9 @@ class AccountModal {
             this.billingStatus = status;
             this.billingStatusAccountId = accountId;
             this.billingStatusError = null;
+            if (this.statusHasPremiumOrTickets(status)) {
+                this.billing?.clearPendingCheckoutSession?.();
+            }
             this.dispatchBillingStatusUpdated();
             return status;
         } catch (error) {
@@ -696,12 +708,23 @@ class AccountModal {
         return this.isPaidSubscription(subscription);
     }
 
+    hasReturnedCheckoutPending() {
+        return !!this.getVerifiedAccountId() && !!this.billing?.getPendingCheckoutSession?.();
+    }
+
+    statusHasPremiumOrTickets(status) {
+        const subscription = status?.subscription;
+        const ticketCount = Math.max(0, Math.floor(Number(status?.nextClaimableTickets || status?.claimableTickets || status?.unclaimedTickets) || 0));
+        return ticketCount > 0 || this.isPaidSubscription(subscription) || this.isCheckoutCompletedSubscription(subscription);
+    }
+
     shouldRenderBillingSection() {
         if (!this.getVerifiedAccountId()) return false;
         const status = this.getCurrentBillingStatus();
         const subscription = status?.subscription;
         return this.billingStatusLoading ||
             !!this.billingStatusError ||
+            this.hasReturnedCheckoutPending() ||
             this.getUnclaimedTicketCount() > 0 ||
             this.isPaidSubscription(subscription) ||
             this.isCheckoutCompletedSubscription(subscription);
@@ -729,6 +752,7 @@ class AccountModal {
         window.dispatchEvent(new CustomEvent('billing-status-updated', {
             detail: {
                 accountId: this.getVerifiedAccountId(),
+                status: this.getCurrentBillingStatus(),
                 source: 'account-modal'
             }
         }));
@@ -1295,9 +1319,10 @@ class AccountModal {
         const status = this.getCurrentBillingStatus();
         const subscription = status?.subscription;
         const hasPremium = this.isPaidSubscription(subscription);
-        const isPending = this.isCheckoutCompletedSubscription(subscription);
         const unclaimedTickets = this.getUnclaimedTicketCount();
         const nextClaimableTickets = this.getNextClaimableTicketCount();
+        const isPending = !hasPremium && nextClaimableTickets <= 0 &&
+            (this.isCheckoutCompletedSubscription(subscription) || this.hasReturnedCheckoutPending());
         const canPortal = hasPremium && !!status?.stripeCustomerId && !this.billingBusyAction;
         const canClaim = nextClaimableTickets > 0 && !this.billingBusyAction;
         const portalLabel = this.billingBusyAction === 'portal' ? 'Opening portal...' : 'Manage billing';
