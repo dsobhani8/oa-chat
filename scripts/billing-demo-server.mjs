@@ -15,6 +15,7 @@ loadEnvFile(ENV_PATH);
 const PORT = Number.parseInt(process.env.BILLING_SERVER_PORT || '4242', 10);
 const HOST = process.env.BILLING_SERVER_HOST || '127.0.0.1';
 const APP_URL = process.env.APP_URL || 'http://localhost:8091';
+const ALLOWED_RETURN_ORIGINS = parseAllowedOrigins(process.env.BILLING_ALLOWED_RETURN_ORIGINS || '');
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
 const STRIPE_API_BASE_URL = process.env.STRIPE_API_BASE_URL || 'https://api.stripe.com';
@@ -133,11 +134,17 @@ async function handleCheckout(req, res) {
         sendJson(res, 401, { error: 'Account session is required.' });
         return;
     }
+    const body = await readJson(req);
+    const returnOrigin = resolveReturnOrigin(body.return_origin, req.headers.origin);
+    if (!returnOrigin) {
+        sendJson(res, 400, { error: 'Return origin is not allowed.' });
+        return;
+    }
 
-    await startAccountSubscriptionCheckout(res, sessionAccountId);
+    await startAccountSubscriptionCheckout(res, sessionAccountId, returnOrigin);
 }
 
-async function startAccountSubscriptionCheckout(res, accountId) {
+async function startAccountSubscriptionCheckout(res, accountId, returnOrigin = buildAppReturnOrigin()) {
     if (!PREMIUM_PRICE_ID || !PLAN_BY_PRICE.has(PREMIUM_PRICE_ID)) {
         sendJson(res, 500, { error: 'STRIPE_PREMIUM_PRICE_ID is not configured.' });
         return;
@@ -148,7 +155,7 @@ async function startAccountSubscriptionCheckout(res, accountId) {
         sendJson(res, 409, { error: 'Premium is already linked to this account.' });
         return;
     }
-    const pendingCheckout = getReusablePendingCheckout(account, 'subscription');
+    const pendingCheckout = getReusablePendingCheckout(account, 'subscription', returnOrigin);
     if (pendingCheckout) {
         sendJson(res, 200, {
             url: pendingCheckout.url,
@@ -158,15 +165,15 @@ async function startAccountSubscriptionCheckout(res, accountId) {
         return;
     }
 
-    const result = await getOrCreateAccountSubscriptionCheckout(account);
+    const result = await getOrCreateAccountSubscriptionCheckout(account, returnOrigin);
     sendJson(res, result.status, result.body);
 }
 
-async function getOrCreateAccountSubscriptionCheckout(account) {
-    const lockKey = `${account.accountId}:${PREMIUM_PRICE_ID}`;
+async function getOrCreateAccountSubscriptionCheckout(account, returnOrigin = buildAppReturnOrigin()) {
+    const lockKey = `${account.accountId}:${PREMIUM_PRICE_ID}:${returnOrigin}`;
     let inFlight = accountSubscriptionCheckoutCreations.get(lockKey);
     if (!inFlight) {
-        inFlight = createAccountSubscriptionCheckout(account)
+        inFlight = createAccountSubscriptionCheckout(account, returnOrigin)
             .finally(() => {
                 accountSubscriptionCheckoutCreations.delete(lockKey);
             });
@@ -175,14 +182,14 @@ async function getOrCreateAccountSubscriptionCheckout(account) {
     return inFlight;
 }
 
-async function createAccountSubscriptionCheckout(account) {
+async function createAccountSubscriptionCheckout(account, returnOrigin = buildAppReturnOrigin()) {
     if (hasCurrentPremiumSubscription(account)) {
         return {
             status: 409,
             body: { error: 'Premium is already linked to this account.' }
         };
     }
-    const pendingCheckout = getReusablePendingCheckout(account, 'subscription');
+    const pendingCheckout = getReusablePendingCheckout(account, 'subscription', returnOrigin);
     if (pendingCheckout) {
         return {
             status: 200,
@@ -194,7 +201,7 @@ async function createAccountSubscriptionCheckout(account) {
         };
     }
 
-    const checkoutReturnUrls = buildCheckoutReturnUrls();
+    const checkoutReturnUrls = buildCheckoutReturnUrls(returnOrigin);
     const sessionParams = {
         mode: 'subscription',
         success_url: checkoutReturnUrls.successUrl,
@@ -228,7 +235,8 @@ async function createAccountSubscriptionCheckout(account) {
         expiresAt: session.expires_at
             ? new Date(session.expires_at * 1000).toISOString()
             : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        appUrl: buildAppReturnUrl(),
+        appUrl: buildAppReturnUrl({}, returnOrigin),
+        returnOrigin,
         createdAt: new Date().toISOString()
     };
     saveStore();
@@ -246,6 +254,12 @@ async function handlePortal(req, res) {
         sendJson(res, 401, { error: 'Account session is required.' });
         return;
     }
+    const body = await readJson(req);
+    const returnOrigin = resolveReturnOrigin(body.return_origin, req.headers.origin);
+    if (!returnOrigin) {
+        sendJson(res, 400, { error: 'Return origin is not allowed.' });
+        return;
+    }
 
     const account = store.accounts?.[sessionAccountId] || null;
     if (!account?.stripeCustomerId) {
@@ -255,7 +269,7 @@ async function handlePortal(req, res) {
 
     const portalSession = await stripeRequest('/v1/billing_portal/sessions', {
         customer: account.stripeCustomerId,
-        return_url: buildAppReturnUrl({ billing: 'portal' })
+        return_url: buildAppReturnUrl({ billing: 'portal' }, returnOrigin)
     });
 
     sendJson(res, 200, { url: portalSession.url });
@@ -1426,11 +1440,18 @@ function hasCurrentPremiumSubscription(account) {
     return ['active', 'trialing', 'checkout_completed'].includes(subscription?.status);
 }
 
-function getReusablePendingCheckout(account, expectedType = 'subscription') {
+function getReusablePendingCheckout(account, expectedType = 'subscription', returnOrigin = '') {
     const pending = account?.pendingCheckout;
     if (!pending?.sessionId || !pending?.url) return null;
     const pendingType = pending.type || 'subscription';
     if (pendingType !== expectedType) return null;
+    const requestedOrigin = normalizeReturnOrigin(returnOrigin);
+    const pendingOrigin = normalizeReturnOrigin(pending.returnOrigin || pending.appUrl || '');
+    if (requestedOrigin && pendingOrigin !== requestedOrigin) {
+        account.pendingCheckout = null;
+        saveStore();
+        return null;
+    }
     if (isPendingCheckoutExpired(pending)) {
         account.pendingCheckout = null;
         saveStore();
@@ -1480,8 +1501,12 @@ async function stripeRequest(endpoint, params) {
     return data;
 }
 
-function buildAppReturnUrl(params = {}) {
-    const url = new URL(APP_URL);
+function buildAppReturnOrigin() {
+    return normalizeReturnOrigin(APP_URL) || 'http://localhost:8091';
+}
+
+function buildAppReturnUrl(params = {}, returnOrigin = buildAppReturnOrigin()) {
+    const url = new URL(returnOrigin);
     url.pathname = '/';
     url.search = '';
     for (const [key, value] of Object.entries(params)) {
@@ -1492,11 +1517,60 @@ function buildAppReturnUrl(params = {}) {
     return url.toString().replace('%7BCHECKOUT_SESSION_ID%7D', '{CHECKOUT_SESSION_ID}');
 }
 
-function buildCheckoutReturnUrls() {
+function buildCheckoutReturnUrls(returnOrigin = buildAppReturnOrigin()) {
     return {
-        successUrl: buildAppReturnUrl({ billing: 'success', session_id: '{CHECKOUT_SESSION_ID}' }),
-        cancelUrl: buildAppReturnUrl({ billing: 'cancelled' })
+        returnOrigin,
+        successUrl: buildAppReturnUrl({ billing: 'success', session_id: '{CHECKOUT_SESSION_ID}' }, returnOrigin),
+        cancelUrl: buildAppReturnUrl({ billing: 'cancelled' }, returnOrigin)
     };
+}
+
+function parseAllowedOrigins(value) {
+    return new Set(String(value || '')
+        .split(',')
+        .map(item => normalizeReturnOrigin(item))
+        .filter(Boolean));
+}
+
+function normalizeReturnOrigin(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+        const url = new URL(raw);
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+        return url.origin;
+    } catch {
+        return '';
+    }
+}
+
+function resolveReturnOrigin(value, requestOrigin = '') {
+    const requested = normalizeReturnOrigin(value);
+    if (String(value || '').trim() && !requested) return '';
+    if (!requested) {
+        const originHeader = normalizeReturnOrigin(requestOrigin);
+        if (originHeader) return isAllowedReturnOrigin(originHeader) ? originHeader : '';
+        return buildAppReturnOrigin();
+    }
+    return isAllowedReturnOrigin(requested) ? requested : '';
+}
+
+function isAllowedReturnOrigin(origin) {
+    const normalized = normalizeReturnOrigin(origin);
+    if (!normalized) return false;
+    const appOrigin = buildAppReturnOrigin();
+    if (normalized === appOrigin) return true;
+    if (ALLOWED_RETURN_ORIGINS.has(normalized)) return true;
+
+    const url = new URL(normalized);
+    if (['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
+        return true;
+    }
+    if (url.protocol === 'https:' &&
+        /^oa-chat-git-stripe-subscription-mvp-[a-z0-9-]+\.vercel\.app$/i.test(url.hostname)) {
+        return true;
+    }
+    return false;
 }
 
 function signBlindedRequest(blindedRequest) {

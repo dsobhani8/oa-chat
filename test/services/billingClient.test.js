@@ -101,6 +101,7 @@ test('billing account debug status is read-only', async () => {
 });
 
 test('billing current account calls use local account session header without body account ids', async () => {
+    const restoreWindow = installWindowMock('oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app');
     const calls = [];
     const restoreFetch = installFetchMock(async (url, options = {}) => {
         const method = options.method || 'GET';
@@ -142,12 +143,13 @@ test('billing current account calls use local account session header without bod
         ]);
         assert.deepEqual(calls.map(call => call.body), [
             null,
-            {},
-            {},
+            { return_origin: 'https://oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app' },
+            { return_origin: 'https://oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app' },
             { blinded_requests: ['blind-one'] }
         ]);
     } finally {
         restoreFetch();
+        restoreWindow();
     }
 });
 
@@ -582,8 +584,11 @@ function installLocalStorageMock(options = {}) {
 
 function installWindowMock(hostname) {
     const original = globalThis.window;
+    const origin = hostname.startsWith('http://') || hostname.startsWith('https://')
+        ? new URL(hostname).origin
+        : `https://${hostname}`;
     globalThis.window = {
-        location: { hostname }
+        location: { hostname: new URL(origin).hostname, origin }
     };
 
     return () => {

@@ -732,6 +732,8 @@ test('billing demo server reuses pending account subscription checkout sessions'
                     type: 'subscription',
                     url: pendingUrl,
                     expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                    returnOrigin: 'http://localhost:8090',
+                    appUrl: 'http://localhost:8090/',
                     createdAt: '2026-07-01T00:00:00.000Z'
                 },
                 createdAt: '2026-07-01T00:00:00.000Z'
@@ -754,6 +756,126 @@ test('billing demo server reuses pending account subscription checkout sessions'
     assert.equal(data.url, pendingUrl);
     assert.equal(data.pendingCheckout, true);
     assert.equal(data.sessionId, 'cs_pending_account');
+});
+
+test('billing demo server creates checkout with caller return origin', { timeout: 10000 }, async (t) => {
+    const accountId = '1234567890123456';
+    const stripe = await startFakeStripeCheckoutServer(t);
+    const { baseUrl, storePath } = await startBillingDemoServer(t, {
+        STRIPE_API_BASE_URL: stripe.baseUrl,
+        APP_URL: 'http://localhost:8091'
+    });
+
+    const response = await fetch(`${baseUrl}/api/billing/checkout`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-OA-Demo-Account-ID': accountId
+        },
+        body: JSON.stringify({
+            return_origin: 'https://oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app'
+        })
+    });
+    const data = await response.json();
+
+    assert.equal(response.status, 200, JSON.stringify(data));
+    assert.equal(stripe.checkoutCalls(), 1);
+    const params = stripe.checkoutParams()[0];
+    assert.equal(
+        params.success_url,
+        'https://oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app/?billing=success&session_id={CHECKOUT_SESSION_ID}'
+    );
+    assert.equal(
+        params.cancel_url,
+        'https://oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app/?billing=cancelled'
+    );
+
+    const store = await readStore(storePath);
+    assert.equal(
+        store.accounts[accountId].pendingCheckout.returnOrigin,
+        'https://oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app'
+    );
+});
+
+test('billing demo server falls back to browser Origin header for checkout return', { timeout: 10000 }, async (t) => {
+    const accountId = '1234567890123456';
+    const stripe = await startFakeStripeCheckoutServer(t);
+    const { baseUrl } = await startBillingDemoServer(t, {
+        STRIPE_API_BASE_URL: stripe.baseUrl,
+        APP_URL: 'https://oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app'
+    });
+
+    const response = await fetch(`${baseUrl}/api/billing/checkout`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Origin': 'http://localhost:8091',
+            'X-OA-Demo-Account-ID': accountId
+        },
+        body: JSON.stringify({})
+    });
+    const data = await response.json();
+
+    assert.equal(response.status, 200, JSON.stringify(data));
+    const params = stripe.checkoutParams()[0];
+    assert.equal(
+        params.success_url,
+        'http://localhost:8091/?billing=success&session_id={CHECKOUT_SESSION_ID}'
+    );
+    assert.equal(
+        params.cancel_url,
+        'http://localhost:8091/?billing=cancelled'
+    );
+});
+
+test('billing demo server does not reuse pending checkout for a different return origin', { timeout: 10000 }, async (t) => {
+    const accountId = '1234567890123456';
+    const stripe = await startFakeStripeCheckoutServer(t);
+    const initialStore = buildStore({
+        accounts: {
+            [accountId]: {
+                accountId,
+                pendingCheckout: {
+                    sessionId: 'cs_pending_localhost',
+                    type: 'subscription',
+                    url: 'https://checkout.stripe.test/pay/cs_pending_localhost',
+                    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+                    returnOrigin: 'http://localhost:8091',
+                    appUrl: 'http://localhost:8091/',
+                    createdAt: '2026-07-01T00:00:00.000Z'
+                },
+                createdAt: '2026-07-01T00:00:00.000Z'
+            }
+        }
+    });
+    const { baseUrl, storePath } = await startBillingDemoServer(t, {
+        STRIPE_API_BASE_URL: stripe.baseUrl,
+        APP_URL: 'http://localhost:8091'
+    }, initialStore);
+
+    const response = await fetch(`${baseUrl}/api/billing/checkout`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-OA-Demo-Account-ID': accountId
+        },
+        body: JSON.stringify({
+            return_origin: 'https://oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app'
+        })
+    });
+    const data = await response.json();
+
+    assert.equal(response.status, 200, JSON.stringify(data));
+    assert.equal(data.pendingCheckout, undefined);
+    assert.equal(data.url, 'https://checkout.stripe.test/pay/cs_mock_checkout_1');
+    assert.equal(stripe.checkoutCalls(), 1);
+
+    const store = await readStore(storePath);
+    assert.equal(store.accounts[accountId].pendingCheckout.sessionId, 'cs_mock_checkout_1');
+    assert.equal(
+        store.accounts[accountId].pendingCheckout.returnOrigin,
+        'https://oa-chat-git-stripe-subscription-mvp-dominic-s-s-projects.vercel.app'
+    );
 });
 
 test('billing demo server serializes concurrent account subscription checkout creation', { timeout: 10000 }, async (t) => {
@@ -956,6 +1078,7 @@ async function startFakeStripeCheckoutServer(t, { delayMs = 0 } = {}) {
     const port = await getAvailablePort();
     const baseUrl = `http://127.0.0.1:${port}`;
     let checkoutCallCount = 0;
+    const checkoutParams = [];
 
     const server = http.createServer(async (req, res) => {
         if (req.method !== 'POST' || req.url !== '/v1/checkout/sessions') {
@@ -965,7 +1088,8 @@ async function startFakeStripeCheckoutServer(t, { delayMs = 0 } = {}) {
         }
 
         checkoutCallCount += 1;
-        await readRequestBody(req);
+        const rawBody = await readRequestBody(req);
+        checkoutParams.push(Object.fromEntries(new URLSearchParams(rawBody)));
         if (delayMs > 0) {
             await delay(delayMs);
         }
@@ -991,7 +1115,8 @@ async function startFakeStripeCheckoutServer(t, { delayMs = 0 } = {}) {
 
     return {
         baseUrl,
-        checkoutCalls: () => checkoutCallCount
+        checkoutCalls: () => checkoutCallCount,
+        checkoutParams: () => checkoutParams.slice()
     };
 }
 

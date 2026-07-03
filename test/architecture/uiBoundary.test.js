@@ -757,6 +757,20 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes('Manage billing'), false);
     assert.equal(source.includes('Premium is managed from Account.'), true);
     assert.equal(source.includes('billing-open-account-btn'), true);
+    assert.equal(source.includes('maybeHandOffManagedPremiumToAccount(options);'), true);
+    assert.equal(source.includes('maybeHandOffManagedPremiumToAccount(options = {})'), true);
+    assert.equal(source.includes('if (!this.isOpen || options.silent || this.lastError) return;'), true);
+    assert.equal(source.includes('const detailStatus = event?.detail?.status || null;'), true);
+    assert.equal(source.includes('this.status = detailStatus;'), true);
+    assert.equal(accountSource.includes('this.billingStatus = detailStatus;'), true);
+    assert.equal(source.includes('status: this.getCurrentStatus()'), true);
+    assert.equal(accountSource.includes('status: this.getCurrentBillingStatus()'), true);
+    assert.equal(source.includes('hasReturnedCheckoutPending()'), true);
+    assert.equal(accountSource.includes('hasReturnedCheckoutPending()'), true);
+    assert.equal(source.includes('if (this.hasReturnedCheckoutPending()) return true;'), true);
+    assert.equal(source.includes('this.billing?.setPendingCheckoutSession?.(sessionId);'), true);
+    assert.equal(accountSource.includes('statusHasPremiumOrTickets(status)'), true);
+    assert.equal(accountSource.includes('this.billing?.clearPendingCheckoutSession?.();'), true);
     assert.equal(source.includes('Get Premium'), false);
     assert.equal(source.includes("const checkoutLabel = this.busyAction === 'checkout'"), true);
     assert.equal(source.includes(": 'Upgrade';"), true);
@@ -837,6 +851,8 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes('redeemCheckoutSession(normalizedSessionId, {'), false);
     assert.equal(source.includes('redeemReturnedTicketLink(ticketCode)'), false);
     assert.equal(source.includes('Payment complete. Checking Premium tickets...'), true);
+    assert.equal(source.includes('const ticketCount = this.getUnclaimedTicketCount();'), true);
+    assert.equal(source.includes('if (!this.hasPaidSubscription() && ticketCount <= 0)'), true);
     assert.equal(source.includes('Current Plan'), false);
     assert.equal(source.includes('renderTicketStatusLine()'), false);
     assert.equal(source.includes('Payment complete. Check your email for your ticket link.'), false);
@@ -922,8 +938,10 @@ test('billing client and demo server expose account-only billing contract', () =
     assert.equal(clientSource.includes("this.post('/api/billing/account'"), false);
     assert.equal(clientSource.includes("this.post('/api/billing/topup'"), false);
     assert.equal(clientSource.includes("this.post('/api/billing/checkout-session/claim'"), false);
-    assert.equal(clientSource.includes("this.post('/api/billing/checkout', {}, { accountId: normalized })"), true);
-    assert.equal(clientSource.includes("this.post('/api/billing/portal', {}, { accountId: normalized })"), true);
+    assert.equal(clientSource.includes("this.post('/api/billing/checkout', this.buildReturnOriginBody(), { accountId: normalized })"), true);
+    assert.equal(clientSource.includes("this.post('/api/billing/portal', this.buildReturnOriginBody(), { accountId: normalized })"), true);
+    assert.equal(clientSource.includes('buildReturnOriginBody()'), true);
+    assert.equal(clientSource.includes("return origin ? { return_origin: origin } : {};"), true);
     assert.equal(clientSource.includes("this.post('/api/billing/tickets/claim'"), true);
     assert.equal(clientSource.includes("'X-OA-Demo-Account-ID'"), true);
     assert.equal(serverSource.includes("url.pathname === '/api/billing/account'"), false);
@@ -931,7 +949,11 @@ test('billing client and demo server expose account-only billing contract', () =
     assert.equal(serverSource.includes("url.pathname === '/api/billing/checkout-session/claim'"), false);
     assert.equal(serverSource.includes("url.pathname === '/api/tickets/claim'"), false);
     assert.equal(serverSource.includes('STRIPE_TOPUP_100_PRICE_ID'), false);
-    assert.equal(serverSource.includes("return_url: buildAppReturnUrl({ billing: 'portal' })"), true);
+    assert.equal(serverSource.includes("return_url: buildAppReturnUrl({ billing: 'portal' }, returnOrigin)"), true);
+    assert.equal(serverSource.includes('const returnOrigin = resolveReturnOrigin(body.return_origin, req.headers.origin);'), true);
+    assert.equal(serverSource.includes("const originHeader = normalizeReturnOrigin(requestOrigin);"), true);
+    assert.equal(serverSource.includes('function isAllowedReturnOrigin(origin)'), true);
+    assert.equal(serverSource.includes('BILLING_ALLOWED_RETURN_ORIGINS'), true);
     assert.equal(serverSource.includes('async function handleAccount(req, res)'), false);
     assert.equal(serverSource.includes('Account session is required.'), true);
     assert.equal(serverSource.includes('function ensureAccountRecord(email)'), true);
@@ -1111,16 +1133,18 @@ test('billing subscription ticket links are email-delivered and redeemed client-
 test('billing demo server reuses pending subscription checkout sessions', () => {
     const source = read('scripts/billing-demo-server.mjs');
 
-    assert.equal(source.includes('const checkoutReturnUrls = buildCheckoutReturnUrls();'), true);
+    assert.equal(source.includes('const checkoutReturnUrls = buildCheckoutReturnUrls(returnOrigin);'), true);
     assert.equal(source.includes('successUrl: checkoutReturnUrls.successUrl'), true);
     assert.equal(source.includes('cancelUrl: checkoutReturnUrls.cancelUrl'), true);
-    assert.equal(source.includes("function getReusablePendingCheckout(account, expectedType = 'subscription')"), true);
-    assert.equal(source.includes("const pendingCheckout = getReusablePendingCheckout(account, 'subscription');"), true);
+    assert.equal(source.includes("function getReusablePendingCheckout(account, expectedType = 'subscription', returnOrigin = '')"), true);
+    assert.equal(source.includes("const pendingCheckout = getReusablePendingCheckout(account, 'subscription', returnOrigin);"), true);
+    assert.equal(source.includes('pendingOrigin !== requestedOrigin'), true);
+    assert.equal(source.includes("const lockKey = `${account.accountId}:${PREMIUM_PRICE_ID}:${returnOrigin}`;"), true);
     assert.equal(source.includes("const pendingCheckout = getReusablePendingCheckout(existingAccount, 'subscription');"), false);
     assert.equal(source.includes('pendingCheckout: true'), true);
     assert.equal(source.includes('function isPendingCheckoutExpired(pending)'), true);
     assert.equal(source.includes('const accountSubscriptionCheckoutCreations = new Map();'), true);
-    assert.equal(source.includes('async function getOrCreateAccountSubscriptionCheckout(account)'), true);
+    assert.equal(source.includes('async function getOrCreateAccountSubscriptionCheckout(account, returnOrigin = buildAppReturnOrigin())'), true);
     assert.equal(source.includes('accountSubscriptionCheckoutCreations.set(lockKey, inFlight);'), true);
     assert.equal(source.includes('BILLING_DEMO_RENEWAL_SECONDS'), true);
     assert.equal(source.includes('BILLING_DEMO_RENEWAL_TICKETS'), true);
