@@ -19,6 +19,15 @@ test('app entrypoint does not import concrete UI components directly', () => {
     );
 });
 
+test('app startup does not auto-open blocking welcome or no-ticket modals', () => {
+    const appSource = read('chat/app.js');
+    assert.equal(appSource.includes('await this.welcomePanel.init()'), false);
+    assert.equal(appSource.includes('await this.thanksPanel.init()'), false);
+    assert.equal(appSource.includes('The first-run intro modal is intentionally disabled.'), true);
+    assert.equal(appSource.includes('The returning-user "no tickets left" modal is also disabled.'), true);
+    assert.equal(appSource.includes("document.documentElement.setAttribute('data-welcome-hidden', 'true');"), true);
+});
+
 test('domain and application layers do not import UI components', () => {
     const dirs = ['chat/domain', 'chat/application'];
     for (const dir of dirs) {
@@ -725,6 +734,7 @@ test('right panel shows lane-scoped ephemeral keys for Parallel and Council', ()
 
 test('billing checkout uses a compact single-plan popup flow', () => {
     const source = read('chat/components/BillingModal.js');
+    const accountSource = read('chat/components/AccountModal.js');
     const html = read('chat/index.html');
     const css = read('chat/styles.css');
 
@@ -737,14 +747,16 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes('billing-upgrade-dialog'), true);
     assert.equal(source.includes('billing-close-btn'), true);
     assert.equal(source.includes('Upgrade to Premium'), true);
-    assert.equal(source.includes('Premium active'), true);
+    assert.equal(source.includes('Premium active'), false);
     assert.equal(source.includes('formatPriceLabel(plan.priceLabel)'), true);
     assert.equal(source.includes('formatTicketEntitlement(plan.ticketsPerPeriod)'), true);
     assert.equal(source.includes('Billing is separate from inference. Your prompts and responses are never visible to billing.'), true);
     assert.equal(source.includes('Secure checkout by Stripe'), true);
     assert.equal(source.includes('Premium Checkout'), false);
     assert.equal(source.includes('<h1 id="billing-modal-title"'), true);
-    assert.equal(source.includes('Manage billing'), true);
+    assert.equal(source.includes('Manage billing'), false);
+    assert.equal(source.includes('Premium is managed from Account.'), true);
+    assert.equal(source.includes('billing-open-account-btn'), true);
     assert.equal(source.includes('Get Premium'), false);
     assert.equal(source.includes("const checkoutLabel = this.busyAction === 'checkout'"), true);
     assert.equal(source.includes(": 'Upgrade';"), true);
@@ -761,16 +773,24 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes('getVerifiedAccountId()'), true);
     assert.equal(source.includes('this.billing.getCurrentAccountStatus(accountId)'), true);
     assert.equal(source.includes('this.billing.checkoutForCurrentAccount(accountId)'), true);
-    assert.equal(source.includes('this.billing.portalForCurrentAccount(accountId)'), true);
-    assert.equal(source.includes('this.billing.redeemCurrentAccountTickets(accountId'), true);
+    assert.equal(source.includes('this.billing.portalForCurrentAccount(accountId)'), false);
+    assert.equal(source.includes('this.billing.redeemCurrentAccountTickets(accountId'), false);
+    assert.equal(accountSource.includes('this.billing.portalForCurrentAccount(accountId)'), true);
+    assert.equal(accountSource.includes('this.billing.redeemCurrentAccountTickets(accountId'), true);
     assert.equal(source.includes('Create or open Account to continue to Stripe. Billing is separate from inference.'), true);
     assert.equal(source.includes('Requires Account before Stripe'), true);
-    assert.equal(source.includes('Premium tickets ready'), true);
-    assert.equal(source.includes('unclaimed tickets are available for this account'), true);
-    assert.equal(source.includes('billing-claim-account-btn'), true);
-    assert.equal(source.includes('id="billing-portal-btn"'), true);
-    assert.equal(source.includes('this.handlePortal()'), true);
+    assert.equal(source.includes('Premium tickets ready'), false);
+    assert.equal(source.includes('unclaimed tickets are available for this account'), false);
+    assert.equal(source.includes('billing-claim-account-btn'), false);
+    assert.equal(source.includes('id="billing-portal-btn"'), false);
+    assert.equal(source.includes('this.handlePortal()'), false);
+    assert.equal(accountSource.includes('account-premium-claim-btn'), true);
+    assert.equal(accountSource.includes('account-premium-portal-btn'), true);
+    assert.equal(accountSource.includes('Claim ${nextClaimableTickets || plan.ticketsPerPeriod} tickets'), true);
+    assert.equal(accountSource.includes('Manage billing'), true);
     assert.equal(source.includes("const labelText = 'Upgrade';"), true);
+    assert.equal(source.includes('shouldHideUpgradeTab()'), true);
+    assert.equal(source.includes("this.tabBtn.classList.toggle('hidden', shouldHideUpgrade);"), true);
     assert.equal(source.includes('Restart npm run billing:demo to use the current billing test mode.'), true);
     assert.equal(source.includes('showCheckoutError(message)'), true);
     assert.equal(source.includes("this.clearError('health');"), true);
@@ -791,7 +811,7 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes('this.checkoutGeneration !== checkoutGeneration || this.getVerifiedAccountId() !== accountId'), true);
     assert.equal(source.includes("context: 'billing-checkout'"), true);
     assert.equal(source.includes("if (accountBtn) accountBtn.onclick = () => this.handleCheckout();"), true);
-    assert.equal(source.includes("if (accountBtn) accountBtn.onclick = () => this.handleOpenAccount();"), false);
+    assert.equal(source.includes("if (openAccountBtn) openAccountBtn.onclick = () => this.handleOpenAccount();"), true);
     assert.equal(source.includes("this.close({ preservePendingCheckout: true });"), true);
     assert.equal(source.includes("this.notice = 'Account ready. Opening Stripe...';"), false);
     assert.equal(source.includes("this.open({ skipRefresh: true, notice: 'Account ready. Opening Stripe...' });"), true);
@@ -800,8 +820,8 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes('!completedTransition || this.getVerifiedAccountId() !== normalizedAccountId'), true);
     assert.equal(source.includes('accountModal.open({'), true);
     assert.equal(source.includes('Sign in or create an account to continue.'), false);
-    assert.equal(source.includes('Payment is finishing. Tickets will appear when Stripe is ready.'), true);
-    assert.equal(source.includes('Finishing purchase...'), true);
+    assert.equal(source.includes('Payment is finishing. Open Account to check status.'), true);
+    assert.equal(source.includes('Finishing purchase...'), false);
     assert.equal(source.includes('handleReturnedCheckout(sessionId)'), true);
     assert.equal(source.includes('const verifiedAccountChanged = previousAccountId && nextAccountId && previousAccountId !== nextAccountId;'), true);
     assert.equal(source.includes('const verifiedAccountCleared = previousAccountId && !nextAccountId;'), true);
@@ -852,6 +872,7 @@ test('billing checkout uses a compact single-plan popup flow', () => {
     assert.equal(source.includes('Reset local demo billing'), true);
     assert.equal(source.includes('isLocalBillingDemo()'), true);
     assert.equal(source.includes('handleResetLocalDemoBilling()'), true);
+    assert.equal(source.includes('handleLocalDemoBillingReset?.()'), true);
     assert.equal(source.includes('clearStoredEmail?.()'), false);
     assert.equal(source.includes('clearPendingCheckoutSession?.()'), true);
     assert.equal(source.includes('clearPendingTicketClaim?.()'), true);
@@ -960,7 +981,24 @@ test('account modal exposes scoped billing demo account bypass', async () => {
     assert.equal(modalSource.includes('Unlock this account to sync and use billing across devices.'), true);
     assert.equal(modalSource.includes('Unlock with passkey'), true);
     assert.equal(modalSource.includes('portalForAccount'), false);
-    assert.equal(modalSource.includes('Manage billing'), false);
+    assert.equal(modalSource.includes('renderBillingSection()'), true);
+    assert.equal(modalSource.includes('account-premium-claim-btn'), true);
+    assert.equal(modalSource.includes('account-premium-portal-btn'), true);
+    assert.equal(modalSource.includes('Manage billing'), true);
+    assert.equal(modalSource.includes('Checking Premium...'), true);
+    assert.equal(modalSource.includes('tickets ready to load on this browser.'), true);
+    assert.equal(modalSource.includes('attachBillingLifecycleListeners()'), true);
+    assert.equal(modalSource.includes("window.addEventListener('pageshow', this.billingPageShowHandler);"), true);
+    assert.equal(modalSource.includes("document.addEventListener('visibilitychange', this.billingVisibilityChangeHandler);"), true);
+    assert.equal(modalSource.includes("this.billingBusyAction === 'portal'"), true);
+    assert.equal(modalSource.includes('const portalGeneration = this.billingStatusGeneration;'), true);
+    assert.equal(modalSource.includes('this.billingStatusGeneration !== portalGeneration || this.getVerifiedAccountId() !== accountId'), true);
+    assert.equal(modalSource.includes('billingClaimGeneration'), true);
+    assert.equal(modalSource.includes('handleLocalDemoBillingReset()'), true);
+    assert.equal(modalSource.includes('handleResetLocalDemoBilling()'), true);
+    assert.equal(modalSource.includes('account-reset-demo-billing-btn'), true);
+    assert.equal(modalSource.includes('Reset local demo billing'), true);
+    assert.equal(modalSource.includes('this.billingClaimGeneration !== claimGeneration'), true);
     assert.equal(modalSource.includes('createLocalDemoAccount(this.accountInputValue)'), true);
     assert.equal(serviceSource.includes('isLocalhostOrigin()'), true);
     assert.equal(serviceSource.includes('isStripeSubscriptionDemoPreviewOrigin()'), true);

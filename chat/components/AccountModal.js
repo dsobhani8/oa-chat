@@ -10,6 +10,7 @@ class AccountModal {
     constructor(app) {
         this.app = app;
         this.accountService = this.app.services.account;
+        this.billing = this.app.services.billing;
         this.syncService = this.app.services.sync;
         this.isOpen = false;
         this.overlay = document.getElementById('account-modal');
@@ -49,15 +50,34 @@ class AccountModal {
         this.billingCheckoutTransitionResolve = null;
         this.billingCheckoutTransitionPromise = null;
         this.billingCheckoutTransitionAccountId = '';
+        this.billingStatus = null;
+        this.billingStatusAccountId = null;
+        this.billingStatusLoading = false;
+        this.billingStatusError = null;
+        this.billingBusyAction = null;
+        this.billingStatusGeneration = 0;
+        this.billingClaimGeneration = 0;
+        this.billingPageShowHandler = null;
+        this.billingVisibilityChangeHandler = null;
+        this.billingStatusUpdatedHandler = null;
 
         this.accountUnsubscribe = this.accountService.subscribe(state => {
             const wasVerified = !!this.getVerifiedAccountId();
+            const previousAccountId = this.getVerifiedAccountId();
             this.accountState = state;
             const verifiedAccountId = this.getVerifiedAccountId();
+            const verifiedAccountChanged = previousAccountId && verifiedAccountId && previousAccountId !== verifiedAccountId;
+            const verifiedAccountCleared = previousAccountId && !verifiedAccountId;
+            if (verifiedAccountChanged || verifiedAccountCleared) {
+                this.clearBillingStatus();
+            }
             this.updateTabIndicator();
             if (!wasVerified && verifiedAccountId && this.isOpen && this.openContext === 'billing-checkout') {
                 void this.showBillingCheckoutTransition({ accountId: verifiedAccountId });
                 return;
+            }
+            if ((!wasVerified && verifiedAccountId) || verifiedAccountChanged) {
+                void this.refreshBillingStatus({ silent: true });
             }
             if (this.isOpen && (this.creationStep === 'idle' || this.creationStep === 'complete')) {
                 this.render();
@@ -72,6 +92,8 @@ class AccountModal {
         });
 
         this.attachTabListener();
+        this.attachBillingStatusListener();
+        this.attachBillingLifecycleListeners();
         this.updateTabIndicator();
     }
 
@@ -80,6 +102,38 @@ class AccountModal {
         if (tabBtn) {
             tabBtn.onclick = () => this.isOpen ? this.close() : this.open();
         }
+    }
+
+    attachBillingStatusListener() {
+        if (typeof window === 'undefined') return;
+        this.billingStatusUpdatedHandler = event => {
+            const accountId = this.getVerifiedAccountId();
+            if (!accountId || event?.detail?.source === 'account-modal') return;
+            const detailAccountId = this.billing?.normalizeAccountId?.(event?.detail?.accountId) || String(event?.detail?.accountId || '').trim();
+            if (detailAccountId && detailAccountId !== accountId) return;
+            void this.refreshBillingStatus({ silent: true });
+        };
+        window.addEventListener('billing-status-updated', this.billingStatusUpdatedHandler);
+    }
+
+    attachBillingLifecycleListeners() {
+        if (typeof window === 'undefined') return;
+        this.billingPageShowHandler = () => {
+            if (this.billingBusyAction === 'portal') {
+                this.billingBusyAction = null;
+                if (this.isOpen) this.render();
+            }
+            if (this.isOpen && this.getVerifiedAccountId()) {
+                void this.refreshBillingStatus({ silent: true });
+            }
+        };
+        window.addEventListener('pageshow', this.billingPageShowHandler);
+
+        this.billingVisibilityChangeHandler = () => {
+            if (document.visibilityState !== 'visible' || !this.isOpen || !this.getVerifiedAccountId()) return;
+            void this.refreshBillingStatus({ silent: true });
+        };
+        document.addEventListener('visibilitychange', this.billingVisibilityChangeHandler);
     }
 
     getVerifiedAccountId() {
@@ -116,6 +170,9 @@ class AccountModal {
         // Clear any stale errors when opening
         this.accountService.clearErrors();
         this.render();
+        if (this.getVerifiedAccountId()) {
+            void this.refreshBillingStatus({ silent: true });
+        }
         this.overlay.classList.remove('hidden');
 
         const tabBtn = document.getElementById('account-tab-btn');
@@ -481,9 +538,221 @@ class AccountModal {
         this.accountInputValue = '';
         this.recoveryInputValue = '';
         this.showRecoveryInput = false;
+        this.clearBillingStatus();
         this.resetCreationFlow();
         this.render();
         this.app?.showToast?.('Logged out', 'success');
+    }
+
+    // =========================================================================
+    // Billing Handlers
+    // =========================================================================
+
+    clearBillingStatus() {
+        this.billingStatusGeneration += 1;
+        this.billingClaimGeneration += 1;
+        this.billingStatus = null;
+        this.billingStatusAccountId = null;
+        this.billingStatusLoading = false;
+        this.billingStatusError = null;
+        this.billingBusyAction = null;
+    }
+
+    handleLocalDemoBillingReset() {
+        this.clearBillingStatus();
+        if (this.isOpen) this.render();
+    }
+
+    async refreshBillingStatus(options = {}) {
+        if (!this.billing?.getCurrentAccountStatus) return null;
+        const accountId = this.getVerifiedAccountId();
+        if (!accountId) {
+            this.clearBillingStatus();
+            if (this.isOpen && !options.silent) this.render();
+            return null;
+        }
+
+        const generation = this.billingStatusGeneration + 1;
+        this.billingStatusGeneration = generation;
+        this.billingStatusLoading = true;
+        this.billingStatusError = null;
+        if (this.isOpen && !options.silent) this.render();
+
+        try {
+            const status = await this.billing.getCurrentAccountStatus(accountId);
+            if (this.billingStatusGeneration !== generation || this.getVerifiedAccountId() !== accountId) {
+                return null;
+            }
+            this.billingStatus = status;
+            this.billingStatusAccountId = accountId;
+            this.billingStatusError = null;
+            this.dispatchBillingStatusUpdated();
+            return status;
+        } catch (error) {
+            if (this.billingStatusGeneration !== generation || this.getVerifiedAccountId() !== accountId) {
+                return null;
+            }
+            this.billingStatusError = this.formatBillingError(error, 'Unable to load Premium status.');
+            return null;
+        } finally {
+            if (this.billingStatusGeneration === generation) {
+                this.billingStatusLoading = false;
+                if (this.isOpen) this.render();
+            }
+        }
+    }
+
+    async handleAccountBillingPortal() {
+        const accountId = this.getVerifiedAccountId();
+        if (!accountId || !this.billing?.portalForCurrentAccount) return;
+
+        this.billingBusyAction = 'portal';
+        this.billingStatusError = null;
+        this.render();
+        const portalGeneration = this.billingStatusGeneration;
+        try {
+            const data = await this.billing.portalForCurrentAccount(accountId);
+            if (this.billingStatusGeneration !== portalGeneration || this.getVerifiedAccountId() !== accountId) {
+                return;
+            }
+            window.location.href = data.url;
+        } catch (error) {
+            if (this.billingStatusGeneration !== portalGeneration || this.getVerifiedAccountId() !== accountId) {
+                return;
+            }
+            this.billingStatusError = this.formatBillingError(error, 'Unable to open the billing portal.');
+            this.billingBusyAction = null;
+            this.render();
+        }
+    }
+
+    async handleAccountBillingClaim() {
+        const accountId = this.getVerifiedAccountId();
+        if (!accountId || !this.billing?.redeemCurrentAccountTickets) return;
+
+        const claimableTickets = this.getNextClaimableTicketCount();
+        if (claimableTickets <= 0) {
+            this.billingStatusError = null;
+            await this.refreshBillingStatus();
+            return;
+        }
+
+        this.billingBusyAction = 'claim';
+        this.billingStatusError = null;
+        this.render();
+        const claimGeneration = this.billingClaimGeneration;
+        try {
+            const result = await this.billing.redeemCurrentAccountTickets(accountId, {
+                status: this.getCurrentBillingStatus(),
+                shouldAbort: () => this.billingClaimGeneration !== claimGeneration ||
+                    this.getVerifiedAccountId() !== accountId
+            });
+            if (this.billingClaimGeneration !== claimGeneration || this.getVerifiedAccountId() !== accountId) return;
+            await this.refreshBillingStatus({ silent: true });
+            if (this.billingClaimGeneration !== claimGeneration || this.getVerifiedAccountId() !== accountId) return;
+            const ticketCount = result?.tickets?.length || claimableTickets;
+            this.app?.showToast?.(
+                `${ticketCount} demo ticket${ticketCount === 1 ? '' : 's'} loaded. Ticket JSON downloaded.`,
+                'success',
+                7000
+            );
+            this.uiRefreshAfterTicketLoad();
+        } catch (error) {
+            if (this.billingClaimGeneration !== claimGeneration || this.getVerifiedAccountId() !== accountId) return;
+            this.billingStatusError = this.formatBillingError(error, 'Unable to claim Premium tickets.');
+        } finally {
+            if (this.billingClaimGeneration === claimGeneration && this.getVerifiedAccountId() === accountId) {
+                this.billingBusyAction = null;
+                this.render();
+            }
+        }
+    }
+
+    getCurrentBillingStatus() {
+        const accountId = this.getVerifiedAccountId();
+        return accountId && this.billingStatusAccountId === accountId ? this.billingStatus : null;
+    }
+
+    getUnclaimedTicketCount() {
+        const status = this.getCurrentBillingStatus();
+        return Math.max(0, Math.floor(Number(status?.claimableTickets || status?.unclaimedTickets) || 0));
+    }
+
+    getNextClaimableTicketCount() {
+        const status = this.getCurrentBillingStatus();
+        return Math.max(0, Math.floor(Number(status?.nextClaimableTickets || status?.claimableTickets || status?.unclaimedTickets) || 0));
+    }
+
+    isPaidSubscription(subscription) {
+        return ['active', 'trialing'].includes(subscription?.status);
+    }
+
+    isCheckoutCompletedSubscription(subscription) {
+        return subscription?.status === 'checkout_completed';
+    }
+
+    hasAccountPremium() {
+        const subscription = this.getCurrentBillingStatus()?.subscription;
+        return this.isPaidSubscription(subscription);
+    }
+
+    shouldRenderBillingSection() {
+        if (!this.getVerifiedAccountId()) return false;
+        const status = this.getCurrentBillingStatus();
+        const subscription = status?.subscription;
+        return this.billingStatusLoading ||
+            !!this.billingStatusError ||
+            this.getUnclaimedTicketCount() > 0 ||
+            this.isPaidSubscription(subscription) ||
+            this.isCheckoutCompletedSubscription(subscription);
+    }
+
+    formatPriceLabel(priceLabel) {
+        return String(priceLabel || '$35/month').replace(/\s*\/\s*/g, ' / ');
+    }
+
+    formatTicketEntitlement(count) {
+        const value = Math.max(0, Math.floor(Number(count) || 0));
+        return `${value} tickets each month`;
+    }
+
+    formatBillingError(error, fallback) {
+        const message = error?.message || fallback;
+        if (error?.status === 404 || /email (is )?required/i.test(message)) {
+            return 'Restart npm run billing:demo to use the current billing test mode.';
+        }
+        return message;
+    }
+
+    dispatchBillingStatusUpdated() {
+        if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+        window.dispatchEvent(new CustomEvent('billing-status-updated', {
+            detail: {
+                accountId: this.getVerifiedAccountId(),
+                source: 'account-modal'
+            }
+        }));
+    }
+
+    uiRefreshAfterTicketLoad() {
+        this.app?.rightPanel?.renderTopSectionOnly?.();
+        this.dispatchBillingStatusUpdated();
+    }
+
+    handleResetLocalDemoBilling() {
+        if (!this.isLocalBillingDemo()) return;
+        this.billing?.clearPendingCheckoutSession?.();
+        this.billing?.clearPendingTicketClaim?.();
+        this.billing?.clearDemoTickets?.();
+        this.handleLocalDemoBillingReset();
+        this.app?.rightPanel?.renderTopSectionOnly?.();
+        this.dispatchBillingStatusUpdated();
+        this.app?.showToast?.('Local demo billing state reset.', 'success', 4000);
+    }
+
+    isLocalBillingDemo() {
+        if (typeof window === 'undefined') return false;
+        return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
     }
 
     // =========================================================================
@@ -835,6 +1104,9 @@ class AccountModal {
                         <p class="text-[11px] text-muted-foreground">${isLocalDemo ? 'Demo account test identity' : 'Encrypted sync for tickets & preferences'}</p>
                     </div>
 
+                    ${this.renderBillingSection()}
+                    ${this.renderAccountDemoControls()}
+
                     <p class="text-[11px] text-muted-foreground text-center mb-3">${isLocalDemo ? 'Use only for local and shared billing demos' : 'Chat history sync coming soon'}</p>
 
                     <div class="flex gap-3">
@@ -1013,6 +1285,84 @@ class AccountModal {
 
                 ${state.error ? `<p class="text-xs text-destructive mt-3 text-center">${this.escapeHtml(state.error)}</p>` : ''}
             </div>
+        `;
+    }
+
+    renderBillingSection() {
+        if (!this.shouldRenderBillingSection()) return '';
+
+        const plan = this.billing?.plan || { name: 'Premium', priceLabel: '$35/month', ticketsPerPeriod: 500 };
+        const status = this.getCurrentBillingStatus();
+        const subscription = status?.subscription;
+        const hasPremium = this.isPaidSubscription(subscription);
+        const isPending = this.isCheckoutCompletedSubscription(subscription);
+        const unclaimedTickets = this.getUnclaimedTicketCount();
+        const nextClaimableTickets = this.getNextClaimableTicketCount();
+        const canPortal = hasPremium && !!status?.stripeCustomerId && !this.billingBusyAction;
+        const canClaim = nextClaimableTickets > 0 && !this.billingBusyAction;
+        const portalLabel = this.billingBusyAction === 'portal' ? 'Opening portal...' : 'Manage billing';
+        const claimLabel = this.billingBusyAction === 'claim'
+            ? 'Claiming tickets...'
+            : `Claim ${nextClaimableTickets || plan.ticketsPerPeriod} tickets`;
+        const statusText = (() => {
+            if (this.billingStatusLoading && !status) return 'Checking Premium...';
+            if (this.billingStatusError) return this.billingStatusError;
+            if (nextClaimableTickets > 0) {
+                return unclaimedTickets > nextClaimableTickets
+                    ? `${unclaimedTickets} tickets ready. This browser will claim the next ${nextClaimableTickets}.`
+                    : `${nextClaimableTickets} tickets ready to load on this browser.`;
+            }
+            if (isPending) return 'Payment is finishing. Tickets will appear when Stripe is ready.';
+            if (hasPremium) return `${this.formatPriceLabel(plan.priceLabel)} · ${this.formatTicketEntitlement(plan.ticketsPerPeriod)}`;
+            return 'Premium status unavailable.';
+        })();
+        const statusColor = this.billingStatusError ? 'text-destructive' : 'text-muted-foreground';
+
+        return `
+            <section class="w-full rounded-lg border border-border bg-muted/20 px-3 py-3 mb-3 text-left">
+                <div class="flex items-center justify-between gap-3 mb-1">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full ${hasPremium ? 'bg-emerald-500' : isPending ? 'bg-amber-500' : 'bg-muted-foreground'}"></span>
+                        <span class="text-sm font-medium text-foreground">Premium</span>
+                    </div>
+                    ${this.billingStatusLoading ? `<span class="w-3.5 h-3.5 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" aria-hidden="true"></span>` : ''}
+                </div>
+                <p class="text-xs ${statusColor} mb-3">${this.escapeHtml(statusText)}</p>
+                <div class="flex flex-col gap-2">
+                    ${nextClaimableTickets > 0 ? `
+                        <button id="account-premium-claim-btn" class="w-full h-9 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50" type="button" ${canClaim ? '' : 'disabled'}>
+                            ${this.escapeHtml(claimLabel)}
+                        </button>
+                    ` : ''}
+                    ${hasPremium ? `
+                        <button id="account-premium-portal-btn" class="btn-ghost-hover w-full h-9 rounded-lg text-sm border border-border bg-background text-foreground transition-colors disabled:opacity-50" type="button" ${canPortal ? '' : 'disabled'}>
+                            ${this.escapeHtml(portalLabel)}
+                        </button>
+                    ` : ''}
+                    ${this.billingStatusError ? `
+                        <button id="account-premium-refresh-btn" class="btn-ghost-hover w-full h-8 rounded-lg text-xs border border-border bg-background text-foreground transition-colors" type="button">
+                            Refresh Premium
+                        </button>
+                    ` : ''}
+                </div>
+            </section>
+        `;
+    }
+
+    renderAccountDemoControls() {
+        if (!this.isLocalBillingDemo()) return '';
+        return `
+            <details class="w-full rounded-lg border border-dashed border-border bg-background px-3 py-2 mb-3 text-left">
+                <summary class="cursor-pointer text-xs font-medium text-muted-foreground select-none">Demo controls</summary>
+                <div class="pt-2">
+                    <button id="account-reset-demo-billing-btn" class="btn-ghost-hover w-full h-8 rounded-lg text-xs border border-border bg-background text-foreground transition-colors" type="button">
+                        Reset local demo billing
+                    </button>
+                    <p class="text-[11px] text-muted-foreground mt-2 leading-relaxed">
+                        Clears browser demo tickets, pending checkout, and saved claim retries. Stripe and the demo server are unchanged.
+                    </p>
+                </div>
+            </details>
         `;
     }
 
@@ -1237,6 +1587,18 @@ class AccountModal {
 
         const syncBtn = document.getElementById('account-sync-btn');
         if (syncBtn) syncBtn.onclick = () => this.handleSyncNow();
+
+        const premiumClaimBtn = document.getElementById('account-premium-claim-btn');
+        if (premiumClaimBtn) premiumClaimBtn.onclick = () => this.handleAccountBillingClaim();
+
+        const premiumPortalBtn = document.getElementById('account-premium-portal-btn');
+        if (premiumPortalBtn) premiumPortalBtn.onclick = () => this.handleAccountBillingPortal();
+
+        const premiumRefreshBtn = document.getElementById('account-premium-refresh-btn');
+        if (premiumRefreshBtn) premiumRefreshBtn.onclick = () => this.refreshBillingStatus();
+
+        const resetDemoBillingBtn = document.getElementById('account-reset-demo-billing-btn');
+        if (resetDemoBillingBtn) resetDemoBillingBtn.onclick = () => this.handleResetLocalDemoBilling();
     }
 
     async handleSyncNow() {
@@ -1263,6 +1625,18 @@ class AccountModal {
         if (this.syncUnsubscribe) {
             this.syncUnsubscribe();
             this.syncUnsubscribe = null;
+        }
+        if (this.billingStatusUpdatedHandler && typeof window !== 'undefined') {
+            window.removeEventListener('billing-status-updated', this.billingStatusUpdatedHandler);
+            this.billingStatusUpdatedHandler = null;
+        }
+        if (this.billingPageShowHandler && typeof window !== 'undefined') {
+            window.removeEventListener('pageshow', this.billingPageShowHandler);
+            this.billingPageShowHandler = null;
+        }
+        if (this.billingVisibilityChangeHandler && typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', this.billingVisibilityChangeHandler);
+            this.billingVisibilityChangeHandler = null;
         }
     }
 }

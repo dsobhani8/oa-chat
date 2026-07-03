@@ -25,8 +25,9 @@ The backend route contract is documented separately in
 - After successful Checkout, the user returns to the main OA chat page. The app
   refreshes account billing status until Premium or unclaimed tickets appear.
   It does not auto-install tickets from the Stripe redirect. When the webhook
-  has created the paid entitlement, the Upgrade modal shows
-  `Claim 500 Premium tickets`; that browser then generates blinded requests and
+  has created the paid entitlement, `Upgrade` hides for that Premium account and
+  Account shows `Premium`, `Manage billing`, and `Claim 500 tickets` when a
+  batch is available. The claiming browser then generates blinded requests and
   calls `/api/billing/tickets/claim`.
 - `/api/billing/tickets/claim` accepts only `blinded_requests`. The server
   derives the account from the session/header, verifies that account owns one
@@ -164,19 +165,19 @@ On success, the app stays on the main chat page and first shows:
 Payment complete. Checking Premium tickets...
 ```
 
-If Stripe webhooks have created the paid entitlement, the same account shows
-`Claim 500 Premium tickets` in the Upgrade modal. Clicking it downloads ticket
-JSON, stores demo tickets locally, and shows them in the right panel. If the
-webhook is still settling, the app shows `Payment received. Premium tickets are
-still being prepared.` and account billing status will refresh again.
+If Stripe webhooks have created the paid entitlement, the same account hides
+`Upgrade` and shows `Claim 500 tickets` inside Account. Clicking it downloads
+ticket JSON, stores demo tickets locally, and shows them in the right panel. If
+the webhook is still settling, the app shows `Payment received. Premium tickets
+are still being prepared.` and account billing status will refresh again.
 
 With `BILLING_DEMO_RENEWAL_SECONDS=30`, the browser does not wait for Stripe to
 bill every 30 seconds. Instead, every account billing-status refresh asks the
 demo server whether the active Premium account is due for another simulated
 period. If due, the server creates one idempotent unclaimed
-`subscription_demo_renewal` entitlement for the current period. The UI then
-shows `Claim 500 Premium tickets`. Claiming still uses the same blinded-request
-path: browser-generated blinded requests, demo server signatures, browser-local
+`subscription_demo_renewal` entitlement for the current period. Account then
+shows `Claim 500 tickets`. Claiming still uses the same blinded-request path:
+browser-generated blinded requests, demo server signatures, browser-local
 finalization. Status responses keep total unclaimed tickets separate from the
 next claimable batch, so if more than one paid/demo period is waiting the
 browser claims one batch at a time. Only the verified local Account session
@@ -199,8 +200,8 @@ pending Premium Checkout Session exists, another `Upgrade` click returns that
 same Stripe URL instead of creating a second subscription. The demo server also
 serializes in-flight Premium Checkout creation per Account so two simultaneous
 requests do not both create Stripe sessions. Once the current Account has
-active/trialing/checkout-completed Premium, Upgrade shows unclaimed tickets
-first, then `Manage billing` after the paid batch is claimed. If you previously
+active/trialing/checkout-completed Premium, the `Upgrade` pill hides and Account
+owns both `Manage billing` and unclaimed ticket claims. If you previously
 created sessions with `APP_URL=http://localhost:8090/billing-demo.html`, restart
 the billing server with the new `APP_URL`; already-open pending Checkout
 Sessions keep the return URL they were created with.
@@ -245,18 +246,19 @@ see Premium plus any unclaimed ticket batch. Already-claimed finalized tickets d
 not move to the second profile; ticket sync is a future E2EE feature.
 
 The frontend refreshes account billing status after Account verification, when
-`Upgrade` opens, and when the tab becomes visible again. This is the client-pull
-shape production should keep: the app asks whether the signed-in account has
-Premium and unclaimed batches; the server does not push finalized tickets.
+`Upgrade` opens, when Account opens, and when the tab becomes visible again.
+This is the client-pull shape production should keep: the app asks whether the
+signed-in account has Premium and unclaimed batches; the server does not push
+finalized tickets.
 
-On localhost, the Upgrade modal includes a quiet `Demo controls` disclosure with
-`Reset local demo billing`. This clears only browser-local demo billing state:
-pending Checkout Session, pending blinded-claim batches, and demo billing
-tickets. It does not cancel Stripe subscriptions, delete Stripe customers, or
-mutate the demo server store. Use it when you want the popup to return to the
-fresh unsubscribed state without losing the rest of the chat app. If a
-same-browser ticket claim is still running, the reset invalidates that claim
-before it can write local demo tickets.
+On localhost, the Upgrade modal and logged-in Account view include a quiet
+`Demo controls` disclosure with `Reset local demo billing`. This clears only
+browser-local demo billing state: pending Checkout Session, pending
+blinded-claim batches, and demo billing tickets. It does not cancel Stripe
+subscriptions, delete Stripe customers, or mutate the demo server store. If the
+same account still has server-side Premium, the next billing-status refresh will
+show Premium again. If a same-browser ticket claim is still running, the reset
+invalidates that claim before it can write local demo tickets.
 
 Once the current Account has active/trialing/checkout-completed Premium, the
 product endpoint blocks another identical Premium checkout for that account. The
@@ -273,11 +275,11 @@ Use two browser profiles or a normal window plus an incognito window:
 1. Profile A opens `http://localhost:8091`, opens `Account`, and uses
    `Use local test account`. Copy the displayed local account ID.
 2. Profile A opens `Upgrade`, completes Stripe Checkout, then waits for
-   `Claim 500 Premium tickets`.
+   `Upgrade` to hide and Account to show `Claim 500 tickets`.
 3. Before claiming, Profile B opens `http://localhost:8091` with separate
    browser storage, enters the copied local account ID in Account, and uses
    `Use local test account`.
-4. Profile B opens `Upgrade` and should see Premium plus the same unclaimed
+4. Profile B opens Account and should see Premium plus the same unclaimed
    500-ticket batch.
 5. Claim the batch in either profile. The claiming browser gets local demo
    tickets and a JSON download. The other profile still sees Premium, but the
@@ -301,7 +303,7 @@ vault exists.
    browser profile.
 5. The browser calls `/api/billing/status`; if the account still has active
    Premium, the server creates a new unclaimed 500-ticket demo renewal batch.
-6. Open `Upgrade` and claim the new `Claim 500 Premium tickets` batch.
+6. Open Account and claim the new `Claim 500 tickets` batch.
 
 Repeated reloads during the same 30-second period do not create duplicates. The
 renewal entitlement ID is deterministic for the account, Stripe subscription,

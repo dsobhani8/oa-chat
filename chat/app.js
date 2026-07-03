@@ -1846,13 +1846,14 @@ class ChatApp {
 
             const hadTicketsBefore = !!await preferencesStore.getPreference(PREF_KEYS.hadTicketsBefore);
             if (hadTicketsBefore) {
-                await this.thanksPanel.init().catch((error) => {
-                    console.warn('Thanks panel init failed:', error);
-                });
+                // The returning-user "no tickets left" modal is also disabled.
+                // Ticket recovery should stay in non-blocking app surfaces.
+                document.documentElement.setAttribute('data-welcome-hidden', 'true');
             } else {
-                await this.welcomePanel.init().catch((error) => {
-                    console.warn('Welcome panel init failed:', error);
-                });
+                // The first-run intro modal is intentionally disabled. New users
+                // should land directly in the app shell and use Account/Upgrade
+                // or the right-panel ticket controls instead of a blocking intro.
+                document.documentElement.setAttribute('data-welcome-hidden', 'true');
             }
         })();
 

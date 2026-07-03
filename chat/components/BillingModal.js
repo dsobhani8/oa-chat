@@ -33,6 +33,7 @@ class BillingModal {
         }) || null;
 
         this.attachTabListener();
+        this.attachBillingStatusListener();
         this.attachPageLifecycleListeners();
         this.updateTabIndicator();
         void this.init();
@@ -42,6 +43,22 @@ class BillingModal {
     attachTabListener() {
         if (!this.tabBtn) return;
         this.tabBtn.onclick = () => this.isOpen ? this.close() : this.open();
+    }
+
+    attachBillingStatusListener() {
+        if (typeof window === 'undefined') return;
+        this.billingStatusUpdatedHandler = event => {
+            if (event?.detail?.source === 'billing-modal') return;
+            const accountId = this.getVerifiedAccountId();
+            if (!accountId) return;
+            const detailAccountId = this.billing?.normalizeAccountId?.(event?.detail?.accountId) || String(event?.detail?.accountId || '').trim();
+            if (detailAccountId && detailAccountId !== accountId) return;
+            void this.refreshStatus({ silent: true }).finally(() => {
+                this.updateTabIndicator();
+                if (this.isOpen) this.render();
+            });
+        };
+        window.addEventListener('billing-status-updated', this.billingStatusUpdatedHandler);
     }
 
     attachPageLifecycleListeners() {
@@ -480,74 +497,6 @@ class BillingModal {
         this.lastErrorScope = null;
     }
 
-    async handlePortal() {
-        const accountId = this.getVerifiedAccountId();
-        if (!accountId) {
-            this.handleOpenAccount();
-            return;
-        }
-        this.busyAction = 'portal';
-        this.clearError();
-        this.notice = null;
-        this.render();
-        try {
-            const data = await this.billing.portalForCurrentAccount(accountId);
-            window.location.href = data.url;
-        } catch (error) {
-            this.setError(this.formatBillingError(error, 'Unable to open the billing portal.'), 'portal');
-            this.busyAction = null;
-            this.render();
-        }
-    }
-
-    async handleClaimTickets() {
-        const accountId = this.getVerifiedAccountId();
-        if (!accountId) {
-            this.handleOpenAccount();
-            return;
-        }
-        const claimableTickets = this.getUnclaimedTicketCount();
-        if (claimableTickets <= 0) {
-            this.notice = 'No Premium tickets are ready to claim.';
-            this.render();
-            return;
-        }
-
-        this.busyAction = 'claim';
-        this.clearError();
-        this.notice = null;
-        this.render();
-        const resetGeneration = this.localResetGeneration;
-        try {
-            const result = await this.billing.redeemCurrentAccountTickets(accountId, {
-                status: this.getCurrentStatus(),
-                shouldAbort: () => resetGeneration !== this.localResetGeneration ||
-                    this.getVerifiedAccountId() !== accountId
-            });
-            if (resetGeneration !== this.localResetGeneration || this.getVerifiedAccountId() !== accountId) {
-                return;
-            }
-            await this.refreshStatus({ silent: true });
-            const ticketCount = result?.tickets?.length || 0;
-            this.app?.showToast?.(
-                `${ticketCount || claimableTickets} demo ticket${ticketCount === 1 ? '' : 's'} loaded. Ticket JSON downloaded.`,
-                'success',
-                7000
-            );
-            this.busyAction = null;
-            this.dispatchBillingStatusUpdated();
-            this.uiRefreshAfterTicketLoad();
-            this.render();
-        } catch (error) {
-            if (resetGeneration !== this.localResetGeneration || this.getVerifiedAccountId() !== accountId) {
-                return;
-            }
-            this.setError(this.formatBillingError(error, 'Unable to claim Premium tickets.'), 'claim');
-            this.busyAction = null;
-            this.render();
-        }
-    }
-
     handleOpenAccount() {
         this.close();
         this.app?.accountModal?.open?.();
@@ -563,6 +512,7 @@ class BillingModal {
         this.billing?.clearPendingCheckoutSession?.();
         this.billing?.clearPendingTicketClaim?.();
         this.billing?.clearDemoTickets?.();
+        this.app?.accountModal?.handleLocalDemoBillingReset?.();
         this.status = null;
         this.statusAccountId = null;
         this.busyAction = null;
@@ -581,6 +531,10 @@ class BillingModal {
         const subscription = statusForAccount?.subscription;
         const active = this.isPaidSubscription(subscription);
         const claimable = this.getUnclaimedTicketCount() > 0;
+        const shouldHideUpgrade = this.shouldHideUpgradeTab();
+        this.tabBtn.classList.toggle('hidden', shouldHideUpgrade);
+        this.tabBtn.setAttribute('aria-hidden', shouldHideUpgrade ? 'true' : 'false');
+        this.tabBtn.tabIndex = shouldHideUpgrade ? -1 : 0;
         const status = this.health && (missingConfig.length > 0 || this.health.ok === false)
             ? 'warning'
             : active
@@ -619,13 +573,9 @@ class BillingModal {
                     ${this.renderStatusArea()}
                     ${!hasAccount
                         ? this.renderAccountRequiredCard(plan)
-                        : nextClaimableTickets > 0
-                            ? this.renderClaimTicketsCard(plan, nextClaimableTickets, unclaimedTickets)
-                            : hasPremium
-                                ? this.renderSubscribedPremiumCard(plan)
-                                : hasPendingPremium
-                                    ? this.renderPendingPremiumCard(plan)
-                                    : this.renderPremiumCard(plan)}
+                        : nextClaimableTickets > 0 || hasPremium || hasPendingPremium
+                            ? this.renderManagedInAccountCard(plan, { nextClaimableTickets, unclaimedTickets, hasPendingPremium })
+                            : this.renderPremiumCard(plan)}
                     ${this.renderDemoControls()}
                 </div>
             </div>
@@ -696,47 +646,21 @@ class BillingModal {
         `;
     }
 
-    renderPendingPremiumCard(plan) {
+    renderManagedInAccountCard(plan, options = {}) {
+        const nextClaimableTickets = Math.max(0, Math.floor(Number(options.nextClaimableTickets) || 0));
+        const unclaimedTickets = Math.max(0, Math.floor(Number(options.unclaimedTickets) || 0));
+        const hasPendingPremium = !!options.hasPendingPremium;
+        const detailText = hasPendingPremium
+            ? 'Payment is finishing. Open Account to check status.'
+            : nextClaimableTickets > 0
+                ? `${unclaimedTickets || nextClaimableTickets} Premium tickets are ready in Account.`
+                : 'Premium is managed from Account.';
         return `
             <section class="billing-upgrade-content">
-                <h1 id="billing-modal-title" class="billing-upgrade-title">Upgrade to Premium</h1>
-                <div class="billing-upgrade-price">${this.escapeHtml(this.formatPriceLabel(plan.priceLabel))}</div>
-                <p class="billing-upgrade-entitlement">${this.escapeHtml(this.formatTicketEntitlement(plan.ticketsPerPeriod))}</p>
-                <p class="billing-upgrade-privacy">Payment is finishing. Tickets will appear when Stripe is ready.</p>
-                <button class="billing-upgrade-primary" type="button" disabled>Finishing purchase...</button>
-                <p class="billing-upgrade-caption">Secure checkout by Stripe</p>
-            </section>
-        `;
-    }
-
-    renderClaimTicketsCard(plan, ticketCount, totalTicketCount = ticketCount) {
-        const canClaim = this.isServerReady() && !this.busyAction;
-        const claimLabel = this.busyAction === 'claim'
-            ? 'Claiming tickets...'
-            : `Claim ${ticketCount} Premium tickets`;
-        const availabilityText = totalTicketCount > ticketCount
-            ? `${totalTicketCount} unclaimed tickets are available for this account. This browser will claim the next ${ticketCount} ticket batch.`
-            : `${ticketCount} unclaimed tickets are available for this account. This browser will finalize and store them locally.`;
-        return `
-            <section class="billing-upgrade-content">
-                <h1 id="billing-modal-title" class="billing-upgrade-title">Premium tickets ready</h1>
+                <h1 id="billing-modal-title" class="billing-upgrade-title">Premium</h1>
                 <p class="billing-upgrade-active-detail">${this.escapeHtml(this.formatPriceLabel(plan.priceLabel))} · ${this.escapeHtml(this.formatTicketEntitlement(plan.ticketsPerPeriod))}</p>
-                <p class="billing-upgrade-privacy">${this.escapeHtml(availabilityText)}</p>
-                <button id="billing-claim-account-btn" class="billing-upgrade-primary" type="button" ${!canClaim ? 'disabled' : ''}>${this.escapeHtml(claimLabel)}</button>
-            </section>
-        `;
-    }
-
-    renderSubscribedPremiumCard(plan) {
-        const serverReady = this.isServerReady();
-        const canPortal = serverReady && !!this.getCurrentStatus()?.stripeCustomerId && !this.busyAction;
-        const portalLabel = this.busyAction === 'portal' ? 'Opening portal...' : 'Manage billing';
-
-        return `
-            <section class="billing-upgrade-content">
-                <h1 id="billing-modal-title" class="billing-upgrade-title">Premium active</h1>
-                <p class="billing-upgrade-active-detail">${this.escapeHtml(this.formatPriceLabel(plan.priceLabel))} · ${this.escapeHtml(this.formatTicketEntitlement(plan.ticketsPerPeriod))}</p>
-                <button id="billing-portal-btn" class="billing-upgrade-primary billing-upgrade-secondary-action" type="button" ${!canPortal ? 'disabled' : ''}>${this.escapeHtml(portalLabel)}</button>
+                <p class="billing-upgrade-privacy">${this.escapeHtml(detailText)}</p>
+                <button id="billing-open-account-btn" class="billing-upgrade-primary billing-upgrade-secondary-action" type="button">Open Account</button>
             </section>
         `;
     }
@@ -764,11 +688,8 @@ class BillingModal {
         const accountBtn = this.overlay.querySelector('#billing-account-btn');
         if (accountBtn) accountBtn.onclick = () => this.handleCheckout();
 
-        const claimBtn = this.overlay.querySelector('#billing-claim-account-btn');
-        if (claimBtn) claimBtn.onclick = () => this.handleClaimTickets();
-
-        const portalBtn = this.overlay.querySelector('#billing-portal-btn');
-        if (portalBtn) portalBtn.onclick = () => this.handlePortal();
+        const openAccountBtn = this.overlay.querySelector('#billing-open-account-btn');
+        if (openAccountBtn) openAccountBtn.onclick = () => this.handleOpenAccount();
 
         const resetDemoBtn = this.overlay.querySelector('#billing-reset-demo-btn');
         if (resetDemoBtn) resetDemoBtn.onclick = () => this.handleResetLocalDemoBilling();
@@ -853,10 +774,18 @@ class BillingModal {
         return this.getCurrentStatus()?.subscription?.status === 'checkout_completed';
     }
 
+    shouldHideUpgradeTab() {
+        if (!this.getVerifiedAccountId() || !this.getCurrentStatus()) return false;
+        return this.hasBlockingSubscription() || this.getUnclaimedTicketCount() > 0;
+    }
+
     dispatchBillingStatusUpdated() {
         if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
         window.dispatchEvent(new CustomEvent('billing-status-updated', {
-            detail: { accountId: this.getVerifiedAccountId() }
+            detail: {
+                accountId: this.getVerifiedAccountId(),
+                source: 'billing-modal'
+            }
         }));
     }
 

@@ -25,6 +25,14 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
 
 ## Current Notes
 
+- 2026-07-02: The blocking first-run welcome/intro modal and returning-user
+  "no inference tickets left" modal are disabled. `chat/app.js` no longer calls
+  `welcomePanel.init()` for users without prior tickets or `thanksPanel.init()`
+  for users who previously had tickets; it leaves `data-welcome-hidden` set and
+  lets users land directly in the app shell. Keep invite-code/ticket recovery
+  flows in non-blocking app surfaces such as the right panel, Account, or
+  billing UI rather than reintroducing the large `Welcome to oa-chat!` or
+  `You have no inference tickets left :(` modals.
 - 2026-07-01: The product billing path is now account-scoped for
   cross-device subscription continuity.
   - `Upgrade` uses the current verified Account identity. If no account is
@@ -47,6 +55,12 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     `oa-chat-git-stripe-subscription-mvp-*.vercel.app`. That bypass simply
     treats a browser-stored account ID as verified and sends it to the billing
     demo backend through `X-OA-Demo-Account-ID`; it is not production auth.
+    Once a verified account is known to have active/trialing/checkout-completed
+    Premium or unclaimed Premium tickets, the sidebar `Upgrade` pill is hidden.
+    Premium status, `Manage billing`, and `Claim N tickets` then live inside
+    Account. The Upgrade modal remains purchase-only; if stale state lets it
+    open for an already-Premium account, it points the user back to Account
+    rather than exposing portal or claim controls.
   - Product billing calls use `/api/billing/status`,
     `/api/billing/checkout`, `/api/billing/portal`, and
     `/api/billing/tickets/claim`. In demo-account mode, the browser sends the
@@ -82,8 +96,9 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     or `0` to disable simulated renewals.
   - Stripe return is now a receipt/status-refresh path for the product flow. The
     app keeps the user on the main chat page, polls account billing status until
-    Premium or unclaimed tickets appear, and then the modal shows
-    `Claim N Premium tickets` when a paid batch is available. Same-browser
+    Premium or unclaimed tickets appear, hides Upgrade for that verified
+    Premium account, and Account shows `Claim N tickets` when a paid batch is
+    available. Same-browser
     Checkout does not claim by `session_id`; the Stripe redirect is not payment
     proof and only prompts account-status refresh.
     If the app returns from Stripe before Account restoration finishes, keep the
