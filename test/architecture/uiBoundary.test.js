@@ -756,6 +756,21 @@ test('billing checkout uses a minimal account-linked plan flow', () => {
     assert.equal(source.includes('this.status = null;'), true);
 });
 
+test('new browser origins open directly into chat without legacy welcome onboarding', () => {
+    const appSource = read('chat/app.js');
+
+    assert.equal(
+        appSource.includes('await this.welcomePanel.init()'),
+        false,
+        'the legacy welcome panel must not auto-open for first-time visitors'
+    );
+    assert.equal(
+        appSource.includes('await accountService.init()'),
+        true,
+        'account initialization must remain available when welcome onboarding is disabled'
+    );
+});
+
 test('billing client and demo server use account auth instead of hidden demo email identity', () => {
     const clientSource = read('chat/services/billingClient.js');
     const serverSource = read('scripts/billing-demo-server.mjs');

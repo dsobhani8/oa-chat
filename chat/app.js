@@ -1855,10 +1855,6 @@ class ChatApp {
                 await this.thanksPanel.init().catch((error) => {
                     console.warn('Thanks panel init failed:', error);
                 });
-            } else {
-                await this.welcomePanel.init().catch((error) => {
-                    console.warn('Welcome panel init failed:', error);
-                });
             }
         })();
 

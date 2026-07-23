@@ -25,6 +25,13 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
 
 ## Current Notes
 
+- 2026-07-24: New browser origins open directly into the chat instead of
+  automatically launching the legacy `WelcomePanel`. The component remains
+  constructed for compatibility, and existing ticket/account services are
+  unchanged; only the first-run `welcomePanel.init()` call was removed.
+  Previously ticketed users can still receive the separate `ThanksPanel` flow
+  when their ticket balance reaches zero.
+
 - 2026-07-11: OpenRouter `~author/*-latest` aliases normalize in the catalog adapter,
   while provider display/icon metadata resolves through the shared provider registry;
   cached OpenRouter catalog entries also recompute provider metadata from their model
