@@ -130,47 +130,128 @@ class TicketStore {
         return { activeTickets, archivedTickets };
     }
 
+    isDemoBillingTicket(ticket) {
+        if (!ticket || typeof ticket !== 'object') return false;
+        return ticket.source === 'stripe-billing-demo' ||
+            String(ticket.finalized_ticket || '').startsWith('demo_');
+    }
+
+    hasForbiddenBillingMetadata(ticket) {
+        if (!ticket || typeof ticket !== 'object') return false;
+        const forbiddenKeys = new Set([
+            'account_id',
+            'accountId',
+            'billing_email',
+            'billingEmail',
+            'billing_entitlement_id',
+            'billingEntitlementId',
+            'entitlement_id',
+            'entitlementId',
+            'stripe_customer_id',
+            'stripeCustomerId',
+            'stripe_invoice_id',
+            'stripeInvoiceId',
+            'stripe_subscription_id',
+            'stripeSubscriptionId'
+        ]);
+        const forbiddenKeyPattern = /(^|[_-])(account|billing|stripe|entitlement)([_-]|$)/i;
+        if (ticket.source === 'stripe-subscription' || ticket.source === 'stripe-billing-demo') return true;
+        const seen = new WeakSet();
+        const scan = (value) => {
+            if (!value || typeof value !== 'object') return false;
+            if (seen.has(value)) return false;
+            seen.add(value);
+
+            if (Array.isArray(value)) {
+                return value.some(scan);
+            }
+
+            return Object.entries(value).some(([key, nestedValue]) => {
+                const compactKey = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+                if (forbiddenKeys.has(key) ||
+                    forbiddenKeyPattern.test(key) ||
+                    compactKey.startsWith('account') ||
+                    compactKey.startsWith('billing') ||
+                    compactKey.startsWith('stripe') ||
+                    compactKey.includes('entitlement')) {
+                    return true;
+                }
+                return scan(nestedValue);
+            });
+        };
+        return scan(ticket);
+    }
+
+    assertImportableTickets(tickets) {
+        const input = Array.isArray(tickets) ? tickets : [];
+        if (input.some(ticket => this.isDemoBillingTicket(ticket))) {
+            throw new Error('Demo billing ticket files cannot be imported.');
+        }
+        if (input.some(ticket => this.hasForbiddenBillingMetadata(ticket))) {
+            throw new Error('Ticket imports cannot include account or billing metadata.');
+        }
+    }
+
+    validateTicketExtraction(result, payload = null) {
+        if (payload?.source?.mode === 'demo' || payload?.source?.type === 'stripe-subscription-mvp') {
+            if (payload?.source?.mode === 'demo') {
+                throw new Error('Demo billing ticket files cannot be imported.');
+            }
+        }
+        this.assertImportableTickets(result.activeTickets);
+        this.assertImportableTickets(result.archivedTickets);
+        return result;
+    }
+
     extractImportTickets(payload) {
         if (!payload) {
             throw new Error('Invalid ticket file.');
         }
 
         if (Array.isArray(payload)) {
-            return this.splitTicketsByStatus(payload);
+            return this.validateTicketExtraction(this.splitTicketsByStatus(payload));
         }
 
         if (typeof payload !== 'object') {
             throw new Error('Invalid ticket file.');
         }
 
+        if (this.hasForbiddenBillingMetadata(payload)) {
+            throw new Error('Ticket imports cannot include account or billing metadata.');
+        }
+
+        if (payload.source?.mode === 'demo') {
+            throw new Error('Demo billing ticket files cannot be imported.');
+        }
+
         if (payload.data && typeof payload.data === 'object') {
             if (payload.data.tickets) {
-                return this.extractImportTickets(payload.data.tickets);
+                return this.validateTicketExtraction(this.extractImportTickets(payload.data.tickets), payload);
             }
             if (Array.isArray(payload.data.active) || Array.isArray(payload.data.archived)) {
-                return {
+                return this.validateTicketExtraction({
                     activeTickets: Array.isArray(payload.data.active) ? payload.data.active : [],
                     archivedTickets: Array.isArray(payload.data.archived) ? payload.data.archived : []
-                };
+                }, payload);
             }
         }
 
         if (Array.isArray(payload.activeTickets) || Array.isArray(payload.archivedTickets)) {
-            return {
+            return this.validateTicketExtraction({
                 activeTickets: Array.isArray(payload.activeTickets) ? payload.activeTickets : [],
                 archivedTickets: Array.isArray(payload.archivedTickets) ? payload.archivedTickets : []
-            };
+            }, payload);
         }
 
         if (Array.isArray(payload.active) || Array.isArray(payload.archived)) {
-            return {
+            return this.validateTicketExtraction({
                 activeTickets: Array.isArray(payload.active) ? payload.active : [],
                 archivedTickets: Array.isArray(payload.archived) ? payload.archived : []
-            };
+            }, payload);
         }
 
         if (Array.isArray(payload.tickets)) {
-            return this.splitTicketsByStatus(payload.tickets);
+            return this.validateTicketExtraction(this.splitTicketsByStatus(payload.tickets), payload);
         }
 
         throw new Error('No tickets found in the import file.');
@@ -185,6 +266,11 @@ class TicketStore {
 
         input.forEach(ticket => {
             if (!ticket || !ticket.finalized_ticket) {
+                changed = true;
+                return;
+            }
+
+            if (this.isDemoBillingTicket(ticket) || this.hasForbiddenBillingMetadata(ticket)) {
                 changed = true;
                 return;
             }

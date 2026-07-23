@@ -36,12 +36,12 @@ test('ticket import accepts production subscription ticket exports', () => {
     const result = ticketStore.extractImportTickets({
         exportType: 'tickets',
         source: {
-            type: 'stripe-subscription-mvp',
+            type: 'stripe-subscription',
             mode: 'production'
         },
         data: {
             tickets: {
-                active: [{ finalized_ticket: 'prod_ticket_one', source: 'stripe-subscription' }],
+                active: [{ finalized_ticket: 'prod_ticket_one' }],
                 archived: []
             }
         }
@@ -54,9 +54,55 @@ test('ticket import accepts production subscription ticket exports', () => {
 test('ticket normalization drops existing demo billing tickets', () => {
     const result = ticketStore.normalizeTickets([
         { finalized_ticket: 'demo_ticket_old', source: 'stripe-billing-demo' },
-        { finalized_ticket: 'prod_ticket_two', source: 'stripe-subscription' }
+        { finalized_ticket: 'prod_ticket_two' }
     ]);
 
     assert.equal(result.changed, true);
     assert.deepEqual(result.tickets.map(ticket => ticket.finalized_ticket), ['prod_ticket_two']);
+});
+
+test('ticket import rejects account and billing metadata on finalized tickets', () => {
+    assert.throws(
+        () => ticketStore.extractImportTickets({
+            active: [{ finalized_ticket: 'prod_ticket_three', account_id: 'acct_A' }],
+            archived: []
+        }),
+        /account or billing metadata/
+    );
+
+    assert.throws(
+        () => ticketStore.extractImportTickets({
+            active: [{ finalized_ticket: 'prod_ticket_four', source: 'stripe-subscription' }],
+            archived: []
+        }),
+        /account or billing metadata/
+    );
+
+    assert.throws(
+        () => ticketStore.extractImportTickets({
+            active: [{
+                finalized_ticket: 'prod_ticket_five',
+                metadata: {
+                    entitlement_id: 'ent_123'
+                }
+            }],
+            archived: []
+        }),
+        /account or billing metadata/
+    );
+
+    assert.throws(
+        () => ticketStore.extractImportTickets({
+            data: {
+                tickets: {
+                    active: [{ finalized_ticket: 'prod_ticket_six' }],
+                    archived: [],
+                    metadata: {
+                        entitlement_id: 'ent_456'
+                    }
+                }
+            }
+        }),
+        /account or billing metadata/
+    );
 });

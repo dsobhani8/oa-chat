@@ -67,137 +67,49 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
   - `buildSharePayload(...)` now routes through `chat/services/sharePayload.js`
     so shared Memory Agent messages preserve this safe reason metadata without
     pulling share-service network side effects into payload tests.
-- 2026-07-01: Stripe subscription MVP is integrated into the OA app while fake
-  tickets remain separate from production redemption.
-  - The branch dev server uses `8091`; the billing shim uses `4242`, and
-    `scripts/billing-demo-server.mjs` defaults `APP_URL` to
-    `http://localhost:8091`. Stripe Checkout now returns to
-    `/?billing=success` or `/?billing=cancelled`; success leaves the user on the
-    main chat page and shows `Payment complete. Check your email for your ticket
-    link.` instead of reopening the Premium modal. Cancelled Checkout still opens
-    the Premium modal. `BillingModal` removes only billing query params from the
-    URL.
-    The demo server asks Stripe for a fresh Checkout Session on each
-    `Get Premium Plan` click and stores the expected success/cancel URLs with
-    the pending session, avoiding stale debug-page redirects.
-    If `invoice.paid` arrives before `checkout.session.completed` and the server
-    cannot resolve the Stripe customer email yet, it stores the invoice under
-    `pendingInvoices` and processes it after Checkout completion records the
-    customer/email mapping. Ignored or email-deferred `invoice.paid` events are
-    not recorded as fully processed; after a local price-ID fix, the same Stripe
-    event can be resent, and the demo server retries resolvable pending invoices
-    at startup.
-  - The app has an `Upgrade` button next to `Account`. `chat/services/billingClient.js`
-    wraps `/health`, `/api/billing/status`, `/api/billing/checkout`,
-    `/api/billing/account`, `/api/billing/portal`, `/api/tickets/claim`, and
-    the subscription ticket-link endpoints under `/api/ticket-links/:code`;
-    `BillingModal` receives it through `app.services.billing`, matching the
-    shell service-port pattern.
-  - The MVP plan is one Premium subscription at `$35/month`; each `invoice.paid`
-    creates one paid batch of 500 claimable tickets and one single-use
-    `/?tickets=<code>` link for that batch. `BillingModal` is a
-    full-page-style Premium plan overlay with a top-left back arrow, one Premium
-    plan card, `$35/month · 500 tickets per month`, and `Get Premium Plan`. It
-    intentionally omits email, login, logout, entitlement tables, claim counters,
-    and privacy explainer copy from the product surface. The MVP still uses a
-    temporary email identity under `oa-billing-demo-email` for legacy manual
-    status and plan-card claim flows, but first-time Checkout now omits generated
-    `demo-...@example.com` identities so Stripe Checkout collects the real
-    customer email. Legacy demo servers whose status response lacks
-    `accountExists` are treated as usable so older manual claim flows do not
-    fail against a still-running pre-account-endpoint server.
-    Existing stored real emails load status so active subscriptions show
-    `Manage billing`; after Checkout success the browser briefly retries
-    `/api/billing/checkout-session?session_id=...` to remember the Stripe email
-    locally once the webhook records it. Checkout remains available even when
-    the same browser/email/customer already has an active subscription. Repeated
-    paid checkouts are additive: each paid invoice creates a separate delivery
-    link and a separate ticket batch. Real auth/account UI belongs outside this
-    checkout page.
-    Demo account creation does not create a Stripe customer until Checkout
-    starts. There is no proration, calendar-month epoch, or first-of-month expiry
-    logic. Entitlements track count and `blindTicketsIssued` fulfillment.
-    After Stripe/webhook activation, the demo server logs or SMTP-sends an email
-    containing `http://localhost:8091/?tickets=<code>`. The query shape is
-    intentional because Python's static `http.server` returns 404 for direct app
-    routes like `/tickets/<code>`. The same plan card can
-    still show `Download tickets` when `claimableTickets > 0`, or `Retry ticket
-    download` when a saved pending claim exists, but product delivery is the
-    emailed ticket link. The ticket count appears as one compact line inside the
-    same Premium card (`500 tickets ready`, `500 tickets download pending`, or
-    `500 demo tickets downloaded`) rather than as a separate entitlement/debug
-    table.
-    On localhost only, the card also includes a muted `Reset test billing`
-    control that clears the hidden demo email, pending blinded-claim batch, and
-    demo-only ticket store so a tester can start a fresh Checkout identity. This
-    reset does not cancel or delete anything in Stripe or the demo server store.
-    If SMTP is configured but fails or times out, the demo server prints the same
-    ticket-link email to the terminal as a fallback so the link is not lost. A
-    `console-fallback` delivery can be retried for the same invoice/link after
-    fixing SMTP credentials; successful SMTP and console-only deliveries remain
-    de-duplicated by generated ticket URL.
-    Ticket-link delivery tracks the generated URL, so changing `APP_URL` between
-    `8090` and `8091` reprints or resends a previously delivered link on the
-    next delivery attempt when the link URL changes.
-    Stripe Billing Portal sessions return to `/?billing=portal`; `BillingModal`
-    also clears `Opening portal...` / `Opening Stripe...` if the browser restores
-    the page from the back-forward cache after external Stripe navigation.
-  - When the app opens `/?tickets=<code>` or `/tickets/<code>`, it first asks the
-    billing demo server whether the code is a subscription ticket link. If yes,
-    the browser creates
-    local token material, sends only blinded request hashes to
-    `/api/ticket-links/:code/claim`, locally finalizes fake demo tickets,
-    downloads a ticket-shaped JSON, and stores the demo tickets locally. If the
-    billing server is down, errors, or returns 404, the app falls back to the
-    existing invite/split ticket-code path in the right panel so legacy ticket
-    links are not swallowed by the billing probe. If the billing server
-    positively identifies the link as already redeemed, the app shows a
-    non-error already-redeemed toast and does not generate a new blinded batch.
-    If the link is already marked redeemed but the browser still has a saved
-    pending `ticket-link:<code>` blinded batch, the app retries redemption so the
-    server can replay the existing signature response and the browser can recover
-    the JSON download.
-    Ticket-link claims spend only the entitlement ID created for that link's
-    invoice. Manual/debug `/api/tickets/claim` ignores entitlements that already
-    have delivery links, so a claim for one purchase cannot drain a different
-    purchase's link batch. Ticket-link idempotency is scoped by link code and
-    entitlement ID, so adversarially reusing the same blinded request batch
-    across two paid links cannot collide in the demo server claim store.
-    The product card intentionally keeps
-    manual claiming as one button instead of showing entitlement tables or claim
-    counters. The local demo server declares `ticket_mode: "demo"`, so fake
-    finalized tickets are stored under `oa-billing-demo-finalized-tickets`
-    instead of importing them into production
-    `inference_tickets`; `ticketStore` rejects demo billing exports, drops
-    `stripe-billing-demo` / `demo_` tickets during normalization, and blocks
-    manual imports of that JSON. Production import is gated on a future claim
-    response declaring `ticket_mode: "production"` and returning blind-signature
-    responses for the browser to finalize, not server-provided finalized ticket
-    IDs. Until real Privacy Pass finalization is wired for subscription claims,
-    the product action fails closed on `ticket_mode: "production"` instead of
-    hashing fake production tickets into the normal ticket store. The future
-    production path should use the same button, then download the JSON and import
-    it through the normal ticket service after real browser finalization.
-  - Claim flows save pending local token/blinded-request batches in the
-    `oa-billing-pending-ticket-claim` map before calling `/api/tickets/claim` or
-    `/api/ticket-links/:code/claim`; ticket-link pending claims use a
-    `ticket-link:<code>` key. They fail closed if browser storage cannot
-    round-trip the pending batch. The server records a deterministic claim for
-    the email plus blinded request batch, scoped by link code and entitlement ID
-    for subscription links, and replays the same signed responses when the
-    browser retries that saved batch, so a lost HTTP response does not
-    require spending a new entitlement. The product flow clears the pending claim
-    only after the JSON download starts and demo local ticket storage round-trips
-    successfully. Ticket-link claim responses omit the billing email from the
-    response so a bearer link does not reveal the purchaser email to the browser.
-  - Billing does not change `/api/request_key`, production ticket redemption,
-    OpenRouter key issuance, model selection, prompts, or responses. Account or
-    Stripe state may grant claimable blinded-ticket entitlement, but redemption
-    remains accountless and ticket-only.
-  - `chat/billing-demo.html` remains available as a backend debug page; the
-    product flow is the in-app Premium plan overlay. Keep the demo billing server
-    bound to localhost: its MVP identity is email-only and CORS is permissive for
-    local testing. See `docs/BILLING_DEMO.md`.
+
+- 2026-07-01: Account-linked billing plumbing is integrated behind the sidebar
+  `Upgrade` button while inference remains accountless.
+  - `chat/services/billingClient.js` uses `accountService` as the identity
+    source for `/api/billing/status`, `/api/billing/checkout`,
+    `/api/billing/portal`, and `/api/billing/tickets/claim`. It requires an
+    unlocked or server-verified account before any billing call. Claim request
+    bodies contain only `blinded_requests`; account identity is carried by the
+    account auth/session layer. The client does not log billing calls through
+    the inference/network logger.
+  - `BillingModal` is a minimal full-screen Premium plan surface (`$35/month`,
+    500 tickets per month). Active Premium shows `Manage billing`; inactive
+    status shows `Get Premium Plan`; unclaimed entitlements show a single ticket
+    claim action. Account changes, locks, or clears reset cached billing status
+    and rerender the modal so account A's state is not shown while account B is
+    active.
+  - `scripts/billing-demo-server.mjs` is a localhost backend shim. It maps
+    `accountId -> stripeCustomerId`, reuses one Stripe customer per account,
+    blocks duplicate checkout when Premium is already active, and handles Stripe
+    `checkout.session.completed` plus `invoice.paid` webhooks. Each paid invoice
+    line creates one idempotent 500-ticket entitlement for the account; webhook
+    retries or duplicate invoice-line events do not duplicate entitlements. The
+    shim exposes `/api/ticket/issue/public-key` and uses the bundled Privacy
+    Pass issuer to produce real signed blind responses for local claim tests.
+  - Premium ticket claiming is blind and account-authenticated. The browser
+    creates local Privacy Pass blinded requests and saves the pending batch plus
+    serialized finalization state under `oa-billing-pending-ticket-claim-v2`
+    before submitting it. The server spends only an entitlement owned by the
+    authenticated account and returns `ticket_mode: "production"` plus signed
+    blinded responses. Reposting the same blinded batch replays the same signed
+    responses without spending a second entitlement. The browser finalizes
+    signed responses locally and imports only normal cryptographic ticket fields
+    through the existing ticket store. If status refresh shows `0` claimable
+    tickets while a pending claim exists, the modal still retries the saved
+    pending batch count because the server may have already spent the entitlement
+    and be waiting for client-side replay/finalization. If multiple paid periods
+    are unclaimed, the modal claims one entitlement-sized batch at a time instead
+    of using the summed `claimableTickets` total.
+  - `ticketStore` rejects demo billing tickets and any finalized ticket import
+    containing account, Stripe, entitlement, or billing metadata. Billing does
+    not modify `/api/request_key`, OpenRouter/provider payloads, model
+    selection, prompts, responses, or inference network logging. See
+    `docs/ACCOUNT_BILLING.md`.
 - 2026-06-27: Memory now has a global feature gate.
   - IndexedDB setting `memoryFeatureEnabled` defaults on. When false, app
     initialization and `setMemoryFeatureEnabled(false)` force `memoryMode` false
@@ -956,7 +868,7 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
   - Confidential retrieval keys are cached per session on `memoryKey` / `memoryKeyInfo` and must be invalidated on `401` / `403` auth failures.
   - Root `oa-chat` currently does not use that attested SDK path for memory mode. `chat/services/memoryBridge.js` intentionally forces the confidential memory client onto the plain OpenAI-compatible HTTPS path against `https://inference.tinfoil.sh/v1` (`provider: 'openai'`, not `provider: 'tinfoil'`).
   - `nanomem` still supports the SDK-backed, attested Tinfoil transport, but the root app is not opting into it right now.
-  - The generic root-app fallback text `Memory context was not added this time. Sending without it.` logs the underlying exception to the browser console as `Memory augment query failed:`. Check that before assuming the failure is in the retrieval prompt itself.
+  - The generic root-app fallback text `Memory retrieval unavailable. Sending without personal context.` now logs the underlying exception to the browser console as `Memory augment query failed:`. Check that before assuming the failure is in the retrieval prompt itself.
   - Root `oa-chat` now also has the memory filesystem modal shell from `memory-chat`, opened by `Cmd/Ctrl+Shift+M`. Storage editing and local-chat backfill are ported there, but the old `memory-chat` extractor/cancel UI is still not.
   - The settings menu `Data Controls` section now has a dedicated `Memory` row. `Export` uses the same OMF exporter as the memory panel header. `Import` uses a hidden settings-menu file input, then opens the memory panel and hands the selected file into the same OMF preview/merge flow as the panel header import button.
   - The root memory panel now also uses `memory-chat`'s OMF import/export UX, but the actual OMF logic has been moved into `nanomem`. `Export` now goes through `memoryBank.exportOmf()`, and import preview/merge go through `memoryBank.previewOmfImport()` / `memoryBank.importOmf()` instead of app-local format logic.

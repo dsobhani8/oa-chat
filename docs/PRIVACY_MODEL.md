@@ -57,6 +57,14 @@ identity-linked) and the blinded requests. It knows "credential X produced N
 blinded requests." But it only ever sees the blinded form -- it never sees the
 underlying tokens.
 
+Account-linked billing uses the same privacy boundary with a different
+authorization credential. For Premium subscriptions, the account-authorized
+billing endpoint may know "account A has an unclaimed 500-ticket entitlement"
+and may sign 500 blinded requests for that account. It still receives only the
+blinded requests, not finalized tickets. The browser finalizes the signed
+responses locally, and the resulting tickets carry no account, Stripe,
+entitlement, email, chat session, model, prompt, or response metadata.
+
 ### 2. Requesting ephemeral API keys (ticket redemption)
 
 The user redeems a small number of finalized tickets for an ephemeral API key
@@ -280,4 +288,3 @@ inference requests?** For the formal threat model and collusion analysis, see bl
 | "The org could serve per-user public keys to break unlinkability."           | Detectable. The public key endpoint is publicly accessible and unauthenticated. Any user or third party can call it at any time to record and compare keys. Since verification calls are independent and unpredictable, the org cannot serve per-user keys without detection. A single inconsistency reported by any observer exposes the attack. Future: automated transparency log. |
 | "OpenRouter could perform traffic analysis on ephemeral keys to deanonymize users." | False. Each session uses a different ephemeral key with no user identity binding. There is no persistent pseudonym across sessions for the provider to build a longitudinal profile against. Content-based correlation has only plausible deniability -- the provider cannot distinguish Alice sending prompt X from Bob sending the same prompt. This is the cross-unlinkability guarantee (see blog post [Section 3.1.1](https://openanonymity.ai/blog/unlinkable-inference/#311-adversarial-inference-provider)). |
 | "Toggle/ownership verification means trusting OpenRouter, violating zero trust to the OA system components." | False. Toggle and ownership checks enforce accountability on the *station's* provider account -- they are not about trusting the OA system. If OpenRouter lies about its own API state, it undermines itself, not OA. Regardless, user prompts remain unlinkable because blind signatures and ephemeral keys carry no user identity. |
-

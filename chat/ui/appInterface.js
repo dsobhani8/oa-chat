@@ -81,6 +81,7 @@ export function createComponentServicesInterface(options = {}) {
         verifier: options.verifierServiceImpl || globalThis.stationVerifier || null,
         share: options.shareServiceImpl || globalThis.shareService || null,
         account: options.accountServiceImpl || globalThis.accountService || null,
+        billing: options.billingClientImpl || globalThis.billingClient || null,
         sync: options.syncServiceImpl || globalThis.syncService || null
     };
 }
