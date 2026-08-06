@@ -9,7 +9,7 @@
 // signatures), and it is never in the inference data path (never sees prompts
 // or responses). Being closed-source is irrelevant -- its worst case is denial
 // of service, not privacy breach. See docs/PRIVACY_MODEL.md.
-export const ORG_API_BASE = 'https://org.openanonymity.ai';
+export const ORG_API_BASE = 'https://oa-billing-demo.vercel.app';
 
 // Verifier service -- hardware-attested (AMD SEV-SNP) station compliance
 // enforcer. Open-source and auditable. Enforces privacy toggles and key
@@ -24,7 +24,7 @@ export const VERIFIER_URL = 'https://verifier2.openanonymity.ai';
 export const PROXY_URL = 'wss://oa-1.refraction.network/?secret=1f45ceecf768790c8389ff704612d5cf';
 
 // Base URL for shared chat links
-export const SHARE_BASE_URL = 'https://chat.openanonymity.ai';
+export const SHARE_BASE_URL = 'https://oa-billing-demo.vercel.app';
 
 // Cloudflare Turnstile -- browser verification for free access requests.
 // Public site key only; the secret key lives server-side.

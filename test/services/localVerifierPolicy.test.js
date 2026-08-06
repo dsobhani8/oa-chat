@@ -25,6 +25,26 @@ test('local verifier bypass requires explicit loopback browser and org hosts', (
     }), true);
 });
 
+test('deployment artifact allows bypass only on its exact HTTPS billing-demo host', () => {
+    const hostname = 'oa-billing-demo.vercel.app';
+    assert.equal(isLocalVerifierBypassAllowed({
+        locationLike: locationLike(hostname, 'https:'),
+        orgApiBase: `https://${hostname}`
+    }), true);
+    assert.equal(isLocalVerifierBypassAllowed({
+        locationLike: locationLike(hostname, 'http:'),
+        orgApiBase: `https://${hostname}`
+    }), false);
+    assert.equal(isLocalVerifierBypassAllowed({
+        locationLike: locationLike(hostname, 'https:'),
+        orgApiBase: 'https://org.openanonymity.ai'
+    }), false);
+    assert.equal(isLocalVerifierBypassAllowed({
+        locationLike: locationLike(`preview.${hostname}`, 'https:'),
+        orgApiBase: `https://${hostname}`
+    }), false);
+});
+
 test('local verifier bypass rejects non-loopback and lookalike hosts', () => {
     const cases = [
         { locationLike: locationLike('staging.openanonymity.ai'), orgApiBase: 'http://127.0.0.1:8005' },

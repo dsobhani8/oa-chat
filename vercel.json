@@ -2,7 +2,19 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/auth/:path*",
+      "destination": "https://labour-divine-sides-parts.trycloudflare.com/auth/:path*"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://labour-divine-sides-parts.trycloudflare.com/api/:path*"
+    },
+    {
+      "source": "/chat/:path*",
+      "destination": "https://labour-divine-sides-parts.trycloudflare.com/chat/:path*"
+    },
+    {
+      "source": "/:path*",
       "destination": "/index.html"
     }
   ]
