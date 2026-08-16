@@ -49,6 +49,16 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
 
 ## Current Notes
 
+- 2026-08-16: Commercial Membership can host the public ticket tools.
+  - The extension context exposes count-only ticket-tool state plus the existing
+    import, export, split/share, and access-code operations. It never exposes
+    wallet records, account credentials, billing identifiers, or inference data.
+  - Import, Export, and Split are no longer rendered in the right panel. The
+    anonymous access-code form remains there only while no verified, unlocked
+    account is active; downstream Membership supplies the signed-in placement.
+  - Export remains a move operation and keeps the public confirmation that
+    clears the exported local wallet to prevent double spending.
+
 - 2026-08-08: Local oa-org inference has an explicit loopback-only verifier bypass.
   - It activates only when both the oa-chat page and configured oa-org URL use
     exact loopback hostnames (`localhost`, `127.0.0.1`, or IPv6 loopback) over
