@@ -23,6 +23,24 @@ this file so future agents can find it quickly.
 
 Keep entries concise and factual. Prefer short bullets over long narratives.
 
+- 2026-08-21: Production bundles can select oa-org at build time.
+  - Vercel/static builds may set `OA_ORG_ORIGIN` to an HTTPS origin; the build
+    validates and embeds it, and records the effective configured value in
+    `dist/build.json`. The browser still calls oa-org directly.
+  - An unset value preserves the existing behavior: source-mode loopback uses
+    port `8005`, and non-loopback deployments fall back to production.
+  - An explicit build value wins over the hostname fallback, including when a
+    staging build is previewed from localhost. The explicit loopback proxy flag
+    remains the highest-priority local development override.
+  - `ORG_API_BASE` is exported through `chat/publicApi.js` and the lightweight
+    `chat/environmentApi.js` entry so downstream builds can route commercial
+    billing to the exact same org without loading or importing app internals.
+    See [DEPLOYMENT_ENVIRONMENTS.md](DEPLOYMENT_ENVIRONMENTS.md).
+  - Page-view analytics runs from the bundled prelude and uses the same selected
+    origin. Do not reintroduce an inline dynamic import of raw `config.js` or a
+    production-only org DNS prefetch; either would bypass or leak across a
+    staging selection.
+
 - 2026-07-30: Chat startup no longer auto-opens the welcome or returning-user access modal.
   - Empty wallets open directly into the local chat interface; an account is not
     required to use browser-local state.

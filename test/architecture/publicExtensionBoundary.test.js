@@ -13,10 +13,28 @@ test('public API exposes only the documented application factory and constants',
     assert.doesNotMatch(source, /\bChatApp\b|ExtensionHost|ExtensionSlotRegistry|accountService|ticketStore/);
 });
 
+test('environment API exposes configuration without loading application internals', () => {
+    const source = read('chat/environmentApi.js');
+    assert.match(source, /ORG_API_BASE/);
+    assert.match(source, /resolveOrgApiBase/);
+    assert.match(source, /isLoopbackHostname/);
+    assert.match(source, /from '\.\/config\.js'/);
+    assert.doesNotMatch(source, /app\.js|components|services|application\//);
+});
+
 test('standalone public startup injects no extensions', () => {
     const source = read('chat/standalone.js');
     assert.match(source, /createChatApp\(\)/);
     assert.doesNotMatch(source, /extensions\s*:/);
+});
+
+test('page-view analytics uses bundled environment configuration', () => {
+    const html = read('chat/index.html');
+    const prelude = read('chat/prelude.js');
+    assert.doesNotMatch(html, /import\(['"]\.\/config\.js['"]\)/);
+    assert.doesNotMatch(html, /dns-prefetch[^>]+org\.openanonymity\.ai/);
+    assert.match(prelude, /import \{ ORG_API_BASE \} from '\.\/config\.js'/);
+    assert.match(prelude, /ORG_API_BASE\}\/chat\/v1\/analytics\/pageview/);
 });
 
 test('core startup never awaits optional extension mounting', () => {

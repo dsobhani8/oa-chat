@@ -32,3 +32,34 @@ test('preserves the production org for non-local hosts and server contexts', () 
     );
     assert.equal(resolveOrgApiBase(), 'https://org.openanonymity.ai');
 });
+
+test('a configured org origin overrides deployed and loopback runtime defaults', () => {
+    const configuredOrigin = 'https://org-staging.openanonymity.ai';
+    assert.equal(
+        resolveOrgApiBase(
+            { hostname: 'preview.example', origin: 'https://preview.example' },
+            { configuredOrigin }
+        ),
+        configuredOrigin
+    );
+    assert.equal(
+        resolveOrgApiBase(
+            { hostname: 'localhost', origin: 'http://localhost:8080' },
+            { configuredOrigin }
+        ),
+        configuredOrigin
+    );
+});
+
+test('an explicit local proxy remains higher priority on loopback', () => {
+    assert.equal(
+        resolveOrgApiBase(
+            { hostname: 'localhost', origin: 'http://localhost:8080' },
+            {
+                localProxyEnabled: true,
+                configuredOrigin: 'https://org-staging.openanonymity.ai'
+            }
+        ),
+        'http://localhost:8080'
+    );
+});

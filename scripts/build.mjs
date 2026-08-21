@@ -4,6 +4,10 @@ import fs from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import esbuild from 'esbuild';
 import { minify } from 'terser';
+import {
+    DEFAULT_PRODUCTION_ORG_ORIGIN,
+    resolveBuildOrgOrigin
+} from './buildConfig.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +34,7 @@ const vectorDir = path.join(repoRoot, 'vector');
 const localInferenceDir = path.join(repoRoot, 'local_inference');
 const nanomemDir = path.join(repoRoot, 'nanomem');
 const outputMarkerName = '.oa-chat-build-output';
+const configuredOrgOrigin = resolveBuildOrgOrigin();
 
 const pathExists = async (target) => {
     try {
@@ -189,7 +194,13 @@ const build = async () => {
             '.ttf': 'file',
             '.otf': 'file'
         },
-        define: { '__DEV__': 'false' },
+        define: {
+            '__DEV__': 'false',
+            '__OA_ORG_ORIGIN__': JSON.stringify(configuredOrgOrigin),
+            '__OA_DEFAULT_ORG_ORIGIN__': JSON.stringify(
+                configuredOrgOrigin || DEFAULT_PRODUCTION_ORG_ORIGIN
+            )
+        },
         minify: true,
         metafile: true,
         logLevel: 'silent'
@@ -247,10 +258,19 @@ const build = async () => {
     if (appHash) {
         await fs.writeFile(
             path.join(outDir, 'build.json'),
-            JSON.stringify({ hash: appHash, builtAt: new Date().toISOString() }, null, 2)
+            JSON.stringify({
+                hash: appHash,
+                builtAt: new Date().toISOString(),
+                orgOrigin: configuredOrgOrigin
+            }, null, 2)
         );
     }
 
+    console.log(
+        configuredOrgOrigin
+            ? `[build] OA_ORG_ORIGIN=${configuredOrgOrigin}`
+            : '[build] OA_ORG_ORIGIN is unset; using the runtime local/production default.'
+    );
     console.log(`Built app bundle: ${appScriptPath}`);
     if (appCssPath) console.log(`Built app styles: ${appCssPath}`);
     console.log(`Built prelude bundle: ${preludeScriptPath}`);

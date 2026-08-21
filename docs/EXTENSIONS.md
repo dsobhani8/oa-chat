@@ -14,6 +14,16 @@ import {
 createChatApp({ extensions: [] });
 ```
 
+The public entry point also exports `ORG_API_BASE`, `resolveOrgApiBase`, and
+`isLoopbackHostname`. A downstream integration should use this configuration
+for its oa-org requests so account, ticket, and commercial APIs cannot drift
+across different environments. The origin is public deployment configuration
+and does not contain credentials.
+
+Code that needs only environment configuration, without loading the application
+factory, may import those three exports from `chat/environmentApi.js`. This is
+the only additional supported downstream entry point.
+
 ## Extension contract
 
 An extension declares the exact API version it supports and mounts through the

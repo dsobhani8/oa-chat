@@ -36,6 +36,10 @@ npm run preview
 # visit http://localhost:8080
 ```
 
+Production and staging builds can select oa-org with the public build variable
+`OA_ORG_ORIGIN`. See
+[Frontend Deployment Environments](docs/DEPLOYMENT_ENVIRONMENTS.md).
+
 ### Architecture (1-minute overview)
 - `index.html` bootstraps Tailwind, Marked, KaTeX, then loads ES modules.
 - `app.js` coordinates state, components, streaming, and CRUD through `chatDB`.

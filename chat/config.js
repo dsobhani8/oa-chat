@@ -9,22 +9,31 @@
 // signatures), and it is never in the inference data path (never sees prompts
 // or responses). Being closed-source is irrelevant -- its worst case is denial
 // of service, not privacy breach. See docs/PRIVACY_MODEL.md.
-const PRODUCTION_ORG_API_BASE = 'https://org.openanonymity.ai';
+const PRODUCTION_ORG_API_BASE = typeof __OA_DEFAULT_ORG_ORIGIN__ !== 'undefined'
+    ? __OA_DEFAULT_ORG_ORIGIN__
+    : 'https://org.openanonymity.ai';
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const BUILT_ORG_API_BASE = typeof __OA_ORG_ORIGIN__ !== 'undefined'
+    ? __OA_ORG_ORIGIN__
+    : null;
 
 export function isLoopbackHostname(hostname) {
     return LOOPBACK_HOSTNAMES.has(hostname || '');
 }
 
-export function resolveOrgApiBase(locationLike = null, { localProxyEnabled = false } = {}) {
+export function resolveOrgApiBase(
+    locationLike = null,
+    { localProxyEnabled = false, configuredOrigin = BUILT_ORG_API_BASE } = {}
+) {
     const hostname = locationLike?.hostname;
     if (isLoopbackHostname(hostname)) {
         if (localProxyEnabled && locationLike?.origin) {
             return locationLike.origin;
         }
+        if (configuredOrigin) return configuredOrigin;
         return `http://${hostname}:8005`;
     }
-    return PRODUCTION_ORG_API_BASE;
+    return configuredOrigin || PRODUCTION_ORG_API_BASE;
 }
 
 const CURRENT_LOCATION = typeof window !== 'undefined' ? window.location : null;
