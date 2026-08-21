@@ -33,6 +33,17 @@ import networkProxy from './networkProxy.js';
 import ticketStore from './ticketStore.js';
 import { ORG_API_BASE } from './orgEndpoints.js';
 
+function getResponseErrorMessage(data, fallback) {
+    if (typeof data === 'string' && data.trim()) return data.trim();
+    if (data && typeof data === 'object') {
+        for (const field of ['detail', 'error', 'message']) {
+            const value = data[field];
+            if (typeof value === 'string' && value.trim()) return value.trim();
+        }
+    }
+    return fallback;
+}
+
 class TicketClient {
     constructor() {
         console.log('🚀 Initializing TicketClient');
@@ -610,7 +621,7 @@ class TicketClient {
                 });
 
                 if (!signResponse.ok) {
-                    throw new Error(signData.detail || signData.error || signData.message || 'Server error during registration');
+                    throw new Error(getResponseErrorMessage(signData, 'Server error during registration'));
                 }
             } catch (error) {
                 // Log failed request
@@ -966,9 +977,10 @@ class TicketClient {
                     });
 
                     if (!response.ok) {
-                        const errorMessage = data.detail || data.error || data.message ||
-                            (typeof data === 'string' ? data : null) ||
-                            `Failed to request API key (${response.status})`;
+                        const errorMessage = getResponseErrorMessage(
+                            data,
+                            `Failed to request API key (${response.status})`
+                        );
 
                         if (response.status === 401 || errorMessage.includes('double-spending')) {
                             const ticketError = new Error('One or more tickets were already used. Please try again.');
@@ -1128,9 +1140,10 @@ class TicketClient {
                     });
 
                     if (!response.ok) {
-                        const errorMessage = data.detail || data.error || data.message ||
-                            (typeof data === 'string' ? data : null) ||
-                            `Failed to request confidential API key (${response.status})`;
+                        const errorMessage = getResponseErrorMessage(
+                            data,
+                            `Failed to request confidential API key (${response.status})`
+                        );
 
                         if (response.status === 401 || errorMessage.includes('double-spending')) {
                             const ticketError = new Error('One or more tickets were already used. Please try again.');

@@ -65,7 +65,7 @@ function getWelcomeContent() {
 const CLASSES = {
     userWrapper: 'w-full px-2 md:px-3 self-end mb-2',
     userGroup: 'group my-1 flex w-full flex-col gap-2 justify-end items-end relative',
-    userBubble: 'py-3 px-4 font-normal message-user max-w-full',
+    userBubble: 'py-3 px-4 font-normal message-user',
     userContent: 'min-w-0 w-full overflow-hidden break-words',
 
     assistantWrapper: 'w-full px-2 md:px-3 self-start pb-1',

@@ -461,6 +461,7 @@ test('parallel layout stays wide for transcripts and forks with council output',
     const chatAreaSource = read('chat/components/ChatArea.js');
     const controllerSource = read('chat/application/councilController.js');
     const chatInputSource = read('chat/components/ChatInput.js');
+    const messageTemplatesSource = read('chat/components/MessageTemplates.js');
     const styles = read('chat/styles.css');
 
     assert.equal(appSource.includes('messageUsesCouncilLayout(message)'), true);
@@ -523,9 +524,15 @@ test('parallel layout stays wide for transcripts and forks with council output',
         'Parallel/Council layout should stay aligned with manual wide mode width'
     );
     assert.equal(
-        styles.includes('max-width: min(100%, var(--message-reading-width, 44rem));'),
+        styles.includes('--user-message-max-width: 36rem;') &&
+            styles.includes('max-width: min(100%, var(--user-message-max-width, 36rem));'),
         true,
-        'submitted prompts should keep normal reading width in wide and Parallel layouts'
+        'submitted prompts should keep the narrower shared cap in Chat and Parallel layouts'
+    );
+    assert.equal(
+        messageTemplatesSource.includes("userBubble: 'py-3 px-4 font-normal message-user max-w-full'"),
+        false,
+        'the generic max-width utility must not override the shared prompt cap'
     );
     assert.equal(appSource.includes('councilLayoutRequiresMultipleColumns(session'), true);
     assert.equal(appSource.includes("btn.setAttribute('aria-label', isWide ? 'Collapse view' : 'Expand view')"), true);

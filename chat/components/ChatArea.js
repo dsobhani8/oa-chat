@@ -554,7 +554,7 @@ export default class ChatArea {
         panel.innerHTML = `
             <div class="quick-ask-mini-chat" tabindex="-1">
                 <div class="quick-ask-turn quick-ask-turn-user">
-                    <div class="quick-ask-user-bubble message-user py-3 px-4 font-normal max-w-full"></div>
+                    <div class="quick-ask-user-bubble message-user py-3 px-4 font-normal"></div>
                 </div>
                 <div class="quick-ask-turn quick-ask-turn-assistant">
                     <div class="quick-ask-assistant-bubble message-assistant">

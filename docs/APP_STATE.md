@@ -73,11 +73,14 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
     activation, the first encrypted ticket sync, and a billing-ready ticket
     snapshot. A transient startup zero must never open Membership.
 
-- 2026-08-18: Submitted prompt bubbles keep the normal chat reading width.
-  - Normal, manual-wide, and Parallel/Council layouts cap user prompts at the
-    shared `44rem` reading width. Short prompts remain content-sized and
-    right-aligned; only assistant lane responses use the expanded transcript
-    width in Parallel/Council.
+- 2026-08-21: Submitted prompt bubbles use a distinct compact width.
+  - Normal, manual-wide, and Parallel/Council layouts cap user prompts at
+    `36rem`, while the normal assistant reading column remains `44rem` and
+    Parallel/Council response lanes can use the expanded transcript width.
+  - Keep `max-w-full` off `.message-user`: the utility can obscure the intended
+    cap during production assembly. Empty or non-JSON access-service errors
+    must also fall back to the HTTP status instead of dereferencing a null
+    response body; failed key issuance rolls the selected tickets back.
 
 - 2026-08-16: Ticket-code share links stay within their issuing environment.
   - Ticket codes are one-time and environment-scoped, so the sender's current
