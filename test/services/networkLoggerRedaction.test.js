@@ -38,3 +38,35 @@ test('log entries redact nested child keys without mutating the response', () =>
     assert.equal(entry.response.nested.api_key, '[REDACTED]');
     assert.equal(response.key, 'child-secret-value');
 });
+
+test('OpenRouter 403 diagnostics hide provider workspace-management details', () => {
+    const rawMessage = 'Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/example';
+    const entry = networkLogger.logRequest({
+        type: 'openrouter',
+        method: 'POST',
+        status: 403,
+        response: { error: { message: rawMessage } },
+        error: rawMessage
+    });
+
+    assert.match(entry.error, /Inference access could not be refreshed/);
+    assert.match(entry.response.error.message, /Inference access could not be refreshed/);
+    assert.doesNotMatch(JSON.stringify(entry), /openrouter\.ai|workspaces|\/keys\/example/i);
+});
+
+test('typed non-credit OpenRouter 403 diagnostics use generic policy copy', () => {
+    const entry = networkLogger.logRequest({
+        type: 'openrouter',
+        method: 'POST',
+        status: 403,
+        response: {
+            error: {
+                message: 'Key limit exceeded (total limit)',
+                metadata: { error_type: 'permission_denied' }
+            }
+        }
+    });
+
+    assert.match(entry.response.error.message, /access or policy restriction/);
+    assert.doesNotMatch(entry.response.error.message, /could not be refreshed/);
+});

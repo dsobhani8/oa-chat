@@ -67,6 +67,23 @@ Keep entries concise and factual. Prefer short bullets over long narratives.
 
 ## Current Notes
 
+- 2026-08-22: OpenRouter key-limit 403 responses renew ephemeral access.
+  - The shared access classifier preserves existing 402 credit/affordability
+    handling and also recognizes typed `payment_required` /
+    `token_limit_exceeded` errors plus narrowly worded 403 messages such as
+    `Key limit exceeded (total limit)` or the monthly variant.
+  - Generic permission, guardrail, moderation, workspace-budget, and unknown
+    403 responses do not redeem more tickets. Main chat also avoids retrying the
+    same rejected 403 key through the generic transient-error loop.
+  - Main chat, single-chat Quick Ask, and Parallel/Council lanes clear only the
+    exhausted access record, request and verify a replacement, and replay once
+    only when no response content has streamed. A failed renewal stops instead
+    of starting inference without a valid replacement; Stop cancellation is
+    also threaded through in-flight replacement acquisition and prevents replay.
+  - Main chat, Quick Ask, Parallel/Council, and in-memory network diagnostics use
+    safe local copy for key-limit and other 403 failures rather than exposing
+    OpenRouter workspace-management URLs or provider policy text.
+
 - 2026-08-17: Insufficient-ticket preflight exposes a redacted commercial hook.
   - After synchronized budget calculation blocks a send or regeneration,
     `context.tickets.registerShortageHandler()` receives only aggregate

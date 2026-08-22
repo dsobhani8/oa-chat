@@ -3,6 +3,12 @@
  * Tracks and stores network requests for debugging and monitoring
  */
 
+import {
+    getInferenceErrorStatus,
+    getSafeInferenceErrorMessage,
+    isAccessCreditExhaustedError
+} from '../domain/inferenceError.js';
+
 class NetworkLogger {
     constructor() {
         this.logs = [];
@@ -34,6 +40,26 @@ class NetworkLogger {
      * @param {string} details.action - Specific action type for local events
      */
     logRequest(details) {
+        const providerError = {
+            status: details.status,
+            message: typeof details.error === 'string'
+                ? details.error
+                : (details.error?.message ||
+                    details.response?.error?.message ||
+                    details.response?.message ||
+                    (typeof details.response === 'string' ? details.response : null)),
+            data: details.response
+        };
+        const shouldSanitizeProviderError = details.type === 'openrouter' && (
+            getInferenceErrorStatus(providerError) === 403 ||
+            isAccessCreditExhaustedError(providerError)
+        );
+        const safeProviderError = shouldSanitizeProviderError
+            ? getSafeInferenceErrorMessage(providerError)
+            : null;
+        const response = shouldSanitizeProviderError && details.response
+            ? { error: { message: safeProviderError } }
+            : details.response;
         const logEntry = {
             id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             timestamp: Date.now(),
@@ -43,8 +69,10 @@ class NetworkLogger {
             url: details.url || '',
             status: details.status || 0,
             request: details.request || {},
-            response: this.sanitizeResponse(details.response || {}),
-            error: details.error || null,
+            response: this.sanitizeResponse(response || {}),
+            error: shouldSanitizeProviderError && details.error
+                ? safeProviderError
+                : (details.error || null),
             message: details.message || '',
             detail: details.detail || '',
             action: details.action || '',

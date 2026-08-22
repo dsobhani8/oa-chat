@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {
+    getSafeInferenceErrorMessage,
+    isAccessCreditExhaustedError
+} from '../../chat/application/accessController.js';
 
 const { default: CouncilController } = await import('../../chat/application/councilController.js');
 
@@ -19,7 +23,8 @@ function createController({
         getFallbackModelEntry: () => models[0] || null,
         getTicketCost: (modelId) => costs[modelId] ?? 1,
         processMessagesWithFiles: (messages) => messages,
-        isAccessCreditExhaustedError: (error) => error?.status === 402
+        getSafeInferenceErrorMessage,
+        isAccessCreditExhaustedError
     };
     return new CouncilController({
         app,
@@ -928,7 +933,7 @@ test('ensureAccessForEntries rejects insufficient tickets before acquiring any l
     assert.equal(requestCount, 0);
 });
 
-test('sendLaneCompletion retries credit exhaustion after model switch by refreshing only the failed lane', async () => {
+test('sendLaneCompletion retries a key-limit 403 after model switch by refreshing only the failed lane', async () => {
     const savedSessions = [];
     const sendTokens = [];
     const controller = createController({
@@ -941,8 +946,8 @@ test('sendLaneCompletion retries credit exhaustion after model switch by refresh
             sendCompletionStrict: async (_messages, modelId, laneSession) => {
                 sendTokens.push({ modelId, token: laneSession.apiKey });
                 if (sendTokens.length === 1) {
-                    const error = new Error('Can only afford 1 max_tokens');
-                    error.status = 402;
+                    const error = new Error('Key limit exceeded (total limit)');
+                    error.status = 403;
                     throw error;
                 }
                 return { content: 'secondary response' };
@@ -994,6 +999,52 @@ test('sendLaneCompletion retries credit exhaustion after model switch by refresh
     assert.equal(session.councilAccess.secondary.apiKey, 'secondary-new-key');
     assert.equal(session.councilAccess.secondary.modelId, 'anthropic/claude-3');
     assert.equal(savedSessions[0].councilAccess.secondary.apiKey, null);
+});
+
+test('sendLaneCompletion does not refresh or replay after response content has streamed', async () => {
+    let streamCount = 0;
+    let refreshCount = 0;
+    const controller = createController({
+        chatDB: { saveSession: async () => {} },
+        inferenceService: {
+            streamCompletion: async (_messages, _modelId, _laneSession, onChunk) => {
+                streamCount += 1;
+                onChunk('partial response');
+                const error = new Error('Key limit exceeded (total limit)');
+                error.status = 403;
+                throw error;
+            }
+        }
+    });
+    controller.requestLaneAccess = async () => {
+        refreshCount += 1;
+    };
+    const session = {
+        id: 'session-1',
+        councilAccess: {
+            secondary: {
+                apiKey: 'secondary-key',
+                apiKeyInfo: {},
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                modelId: 'anthropic/claude'
+            }
+        }
+    };
+
+    await assert.rejects(
+        controller.sendLaneCompletion({
+            session,
+            entry: { laneId: 'secondary', id: 'anthropic/claude', name: 'Claude' },
+            sanitizedMessages: [{ role: 'user', content: 'hello' }],
+            searchEnabled: false,
+            abortController: null
+        }),
+        /Key limit exceeded/
+    );
+
+    assert.equal(streamCount, 1);
+    assert.equal(refreshCount, 0);
+    assert.equal(session.councilAccess.secondary.apiKey, 'secondary-key');
 });
 
 test('sendLaneMessagesCompletion retries synthesis credit exhaustion without clearing response lanes', async () => {
@@ -1840,6 +1891,37 @@ test('runMultiModelTurn attempts partial synthesis when one Stage 1 lane succeed
     assert.equal(finalMessage.model, 'Council');
     assert.equal(finalMessage.council.synthesis.status, 'partial');
     assert.equal(finalMessage.council.stage1[1].status, 'error');
+});
+
+test('runMultiModelTurn stores safe local copy for provider 403 lane and synthesis failures', async () => {
+    const rawMessage = 'Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/example';
+    const createProviderError = () => {
+        const error = new Error(rawMessage);
+        error.status = 403;
+        return error;
+    };
+    const { controller, session, userMessage, savedMessages } = createRunTurnHarness({
+        sendLaneCompletion: async ({ entry }) => {
+            if (entry.laneId === 'secondary') throw createProviderError();
+            return { content: 'Primary first response' };
+        },
+        runSynthesisCompletion: async () => {
+            throw createProviderError();
+        }
+    });
+
+    await controller.runMultiModelTurn({
+        session,
+        userMessage,
+        searchEnabled: false,
+        abortController: new AbortController(),
+        initialPendingPhase: 'requesting-key'
+    });
+
+    const finalMessage = savedMessages.at(-1);
+    assert.match(finalMessage.council.stage1[1].error, /Inference access could not be refreshed/);
+    assert.match(finalMessage.council.synthesis.error, /Inference access could not be refreshed/);
+    assert.doesNotMatch(JSON.stringify(finalMessage.council), /openrouter|workspaces|\/keys/i);
 });
 
 test('runMultiModelTurn preserves Stage 1 fallback and records synthesis failure state', async () => {

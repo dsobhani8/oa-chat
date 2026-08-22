@@ -75,9 +75,11 @@ import {
 import {
     acquireSessionAccess,
     buildVerifierSubmitKeyProof as buildVerifierSubmitKeyProofValue,
+    getSafeInferenceErrorMessage as getSafeInferenceErrorMessageValue,
     isAccessCreditExhaustedError as isAccessCreditExhaustedErrorValue,
     persistVerifierSubmitKeyProof as persistVerifierSubmitKeyProofValue
 } from './application/accessController.js';
+import { getInferenceErrorStatus as getInferenceErrorStatusValue } from './domain/inferenceError.js';
 import CouncilController from './application/councilController.js';
 import { hasExplicitVerifierApprovalForAccessInfo } from './services/inference/verifiedAccess.js';
 import { prepareEntitlementBatch } from './application/entitlementTicketPreparer.js';
@@ -4040,6 +4042,10 @@ class ChatApp {
         return isAccessCreditExhaustedErrorValue(error);
     }
 
+    getSafeInferenceErrorMessage(error, fallback = 'Request failed.') {
+        return getSafeInferenceErrorMessageValue(error, fallback);
+    }
+
     getTicketCost(modelId, reasoningEnabled = this.reasoningEnabled) {
         return getTicketCost(modelId, reasoningEnabled);
     }
@@ -4141,7 +4147,7 @@ class ChatApp {
         return false;
     }
 
-    async refreshAccessAfterCreditExhaustion(session, { typingId = null } = {}) {
+    async refreshAccessAfterCreditExhaustion(session, { typingId = null, signal = null } = {}) {
         if (!session) throw new Error('No active session found.');
 
         const accessLabel = inferenceService.getAccessLabel(session);
@@ -4161,6 +4167,7 @@ class ChatApp {
         }
 
         await this.acquireAndSetAccess(session, {
+            signal,
             onGranted: () => {
                 this.advancePendingStateAfterAccessGranted(session.id, typingId);
             }
@@ -6538,11 +6545,12 @@ class ChatApp {
             // Helper to check if error is retryable (only before streaming starts)
             const isRetryableError = (error) => {
                 if (error.isCancelled) return false;
+                const status = getInferenceErrorStatusValue(error);
                 // Gateway errors are retryable
-                if ([502, 503, 504].includes(error.status)) return true;
+                if ([502, 503, 504].includes(status)) return true;
                 // Generic errors (no specific status or unrecognized) are retryable
                 const errorMsg = error.message || '';
-                const hasSpecificError = error.status === 401 || error.status === 402 ||
+                const hasSpecificError = status === 401 || status === 402 || status === 403 ||
                     errorMsg.includes('proxy') || errorMsg.includes('Proxy') ||
                     errorMsg.includes('No API key');
                 return !hasSpecificError;
@@ -6833,6 +6841,7 @@ class ChatApp {
                 }
 
                 let terminalError = error;
+                let accessRefreshFailed = false;
 
                 if (!firstChunkReceived && !accessRefreshAttempted && this.isAccessCreditExhaustedError(error)) {
                     accessRefreshAttempted = true;
@@ -6841,16 +6850,27 @@ class ChatApp {
                     typingId = this.isViewingSession(session.id) ? this.showTypingIndicator(modelNameToUse, refreshPendingPhase) : null;
 
                     try {
-                        await this.refreshAccessAfterCreditExhaustion(session, { typingId });
+                        await this.refreshAccessAfterCreditExhaustion(session, {
+                            typingId,
+                            signal: abortController.signal
+                        });
                         continue retryLoop;
                     } catch (refreshError) {
+                        if (refreshError?.isCancelled || abortController.signal.aborted) {
+                            if (typingId) {
+                                this.removeTypingIndicator(typingId);
+                                typingId = null;
+                            }
+                            break retryLoop;
+                        }
                         console.error('Failed to refresh exhausted ephemeral key:', refreshError);
                         terminalError = refreshError;
+                        accessRefreshFailed = true;
                     }
                 }
 
                 // Check if we should retry (only if no content received yet)
-                if (!firstChunkReceived && retryCount < MAX_RETRIES && isRetryableError(error)) {
+                if (!firstChunkReceived && !accessRefreshFailed && retryCount < MAX_RETRIES && isRetryableError(error)) {
                     retryCount++;
                     console.log(`Retrying request (attempt ${retryCount + 1}/${MAX_RETRIES + 1}) after error:`, error.message);
                     // Small delay before retry (500ms * attempt number)
@@ -6868,15 +6888,21 @@ class ChatApp {
 
                 // Customize messages for specific error types
                 let userFriendlyMessage = `Sorry, I encountered an error while processing your request. Try re-submitting the query. **Error**: ${errorMessage}`;
+                const terminalStatus = getInferenceErrorStatusValue(terminalError);
 
                 // The following are inference backend HTTP status codes, not OA infra
-                if (terminalError.status === 402) {
+                if (this.isAccessCreditExhaustedError(terminalError)) {
+                    userFriendlyMessage = this.getSafeInferenceErrorMessage(terminalError, errorMessage);
+                } else if (terminalStatus === 402) {
                     // Credit/token limit errors
                     userFriendlyMessage = `Sorry, I encountered an error while processing your request. Try submitting the query again. **Error**: ${errorMessage}`;
-                } else if (terminalError.status === 401) {
+                } else if (terminalStatus === 403) {
+                    // Avoid exposing provider workspace links or internal policy details.
+                    userFriendlyMessage = this.getSafeInferenceErrorMessage(terminalError, errorMessage);
+                } else if (terminalStatus === 401) {
                     // Authentication errors
                     userFriendlyMessage = `Authentication error. Please check the system panel (right side) and submit an issue at [issue](https://docs.google.com/forms/d/e/1FAIpQLSfIwuJ6sMTm1XISiVyb3P1ueK3SFZ_4vLj9-KH4FATodVfyxA/viewform?usp=publish-editor)!`;
-                } else if (terminalError.status === 503 || terminalError.status === 502 || terminalError.status === 504) {
+                } else if (terminalStatus === 503 || terminalStatus === 502 || terminalStatus === 504) {
                     // Service unavailable / gateway errors (after retries exhausted)
                     userFriendlyMessage = `Gateway error (after ${retryCount} retries). Please take a look at the system panel and submit an issue at [issue](https://docs.google.com/forms/d/e/1FAIpQLSfIwuJ6sMTm1XISiVyb3P1ueK3SFZ_4vLj9-KH4FATodVfyxA/viewform?usp=publish-editor).`;
                 } else if (errorMessage.includes('proxy') || errorMessage.includes('Proxy')) {
@@ -7260,21 +7286,27 @@ class ChatApp {
         try {
             tokenData = await streamQuickAsk();
         } catch (error) {
-            if (
-                quickAskModel.laneId &&
-                quickAskModel.laneEntry &&
-                !firstChunkReceived &&
-                this.isAccessCreditExhaustedError(error)
-            ) {
-                this.councilController.clearLaneAccess(session, quickAskModel.laneId);
-                await chatDB.saveSession(session);
-                options.onStatus?.('requesting-key');
-                await this.councilController.requestLaneAccess(
-                    session,
-                    quickAskModel.laneEntry,
-                    null,
-                    abortController.signal
-                );
+            if (!firstChunkReceived && this.isAccessCreditExhaustedError(error)) {
+                if (quickAskModel.laneId && quickAskModel.laneEntry) {
+                    this.councilController.clearLaneAccess(session, quickAskModel.laneId);
+                    await chatDB.saveSession(session);
+                    options.onStatus?.('requesting-key');
+                    await this.councilController.requestLaneAccess(
+                        session,
+                        quickAskModel.laneEntry,
+                        null,
+                        abortController.signal
+                    );
+                } else {
+                    inferenceService.clearAccessInfo(session);
+                    await chatDB.saveSession(session);
+                    quickAskAccessSession = await this.ensureQuickAskAccess(
+                        session,
+                        quickAskModel,
+                        abortController,
+                        options
+                    );
+                }
                 quickAskAccessSession = this.getQuickAskAccessSession(session, quickAskModel);
                 if (abortController.signal.aborted) {
                     const cancelled = new Error('Quick ask cancelled.');

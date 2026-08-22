@@ -669,7 +669,11 @@ export default class ChatArea {
                 this.updateQuickAskStatus('stopped');
                 return;
             }
-            this.updateQuickAskError(error?.message || 'Quick ask failed.');
+            const errorMessage = this.app.getSafeInferenceErrorMessage?.(
+                error,
+                error?.message || 'Quick ask failed.'
+            ) || 'Quick ask failed.';
+            this.updateQuickAskError(errorMessage);
         } finally {
             if (requestId === this.quickAsk.activeRequestId) {
                 this.quickAsk.requestInFlight = false;

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
     acquireSessionAccess,
     buildVerifierSubmitKeyProof,
+    getSafeInferenceErrorMessage,
     isAccessCreditExhaustedError,
     persistVerifierSubmitKeyProof
 } from '../../chat/application/accessController.js';
@@ -105,6 +106,72 @@ test('isAccessCreditExhaustedError recognizes OpenRouter credit exhaustion shape
     assert.equal(isAccessCreditExhaustedError({ status: 402, data: { error: { message: 'Can only afford 1 max_tokens' } } }), true);
     assert.equal(isAccessCreditExhaustedError({ status: 402, responseData: { error: { message: 'Can only afford 1 max_tokens' } } }), true);
     assert.equal(isAccessCreditExhaustedError({ status: 402, data: { detail: 'unrelated billing text' } }), false);
+    assert.equal(isAccessCreditExhaustedError({
+        status: 403,
+        data: {
+            error: {
+                message: 'Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/example'
+            }
+        }
+    }), true);
+    assert.equal(isAccessCreditExhaustedError({
+        status: 403,
+        responseData: { error: { message: 'Key limit exceeded (monthly limit)' } }
+    }), true);
+    assert.equal(isAccessCreditExhaustedError({ code: 403, message: 'API key spending limit reached' }), true);
+    assert.equal(isAccessCreditExhaustedError({
+        code: 'permission_denied',
+        data: { error: { code: 403, message: 'Key limit exceeded (total limit)' } }
+    }), true);
+    assert.equal(isAccessCreditExhaustedError({
+        status: null,
+        data: { error: { code: 403, message: 'Key limit exceeded (total limit)' } }
+    }), true);
+    assert.equal(isAccessCreditExhaustedError({
+        status: 403,
+        data: { error: { message: 'Key limit exceeded (total limit)', metadata: { error_type: '   ' } } }
+    }), true);
+    assert.equal(isAccessCreditExhaustedError({
+        status: 403,
+        data: { error: { metadata: { error_type: 'payment_required' } } }
+    }), true);
+    assert.equal(isAccessCreditExhaustedError({
+        status: 403,
+        data: { error: { metadata: { error_type: 'token_limit_exceeded' } } }
+    }), true);
+    assert.equal(isAccessCreditExhaustedError({
+        status: 403,
+        data: { error: { message: 'Workspace monthly budget exceeded', metadata: { error_type: 'permission_denied' } } }
+    }), false);
+    assert.equal(isAccessCreditExhaustedError({
+        status: 403,
+        data: { error: { message: 'Key limit exceeded (total limit)', metadata: { error_type: 'permission_denied' } } }
+    }), false);
+    assert.equal(isAccessCreditExhaustedError({
+        status: 403,
+        metadata: { error_type: 'guardrail' },
+        message: 'Key limit exceeded (total limit)'
+    }), false);
+    assert.equal(isAccessCreditExhaustedError({ status: 403, message: 'Request blocked: prompt injection patterns detected' }), false);
+    assert.equal(isAccessCreditExhaustedError({ status: 403, message: 'Input was flagged by moderation' }), false);
+    assert.equal(isAccessCreditExhaustedError({ status: 403, message: 'Insufficient permissions for this model' }), false);
+    assert.equal(isAccessCreditExhaustedError({ status: 403, message: 'Spending limit exceeded' }), false);
+    assert.equal(isAccessCreditExhaustedError(null), false);
+});
+
+test('getSafeInferenceErrorMessage hides provider management details for 403 errors', () => {
+    const rawMessage = 'Key limit exceeded (total limit). Manage it using https://openrouter.ai/workspaces/default/keys/example';
+    const safeMessage = getSafeInferenceErrorMessage({ status: 403, message: rawMessage }, rawMessage);
+
+    assert.match(safeMessage, /Inference access could not be refreshed/);
+    assert.doesNotMatch(safeMessage, /openrouter|workspaces|\/keys/i);
+
+    const permissionMessage = getSafeInferenceErrorMessage(
+        { status: 403, message: 'Insufficient permissions' },
+        'Insufficient permissions'
+    );
+    assert.match(permissionMessage, /access or policy restriction/);
+    assert.doesNotMatch(permissionMessage, /Insufficient permissions/);
 });
 
 test('buildVerifierSubmitKeyProof normalizes verifier and org key fields', () => {

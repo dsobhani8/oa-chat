@@ -1124,9 +1124,21 @@ test('inline quick ask preserves scrubber and session lifecycle constraints', ()
         inlineQuickAskMatch[0].includes('this.isAccessCreditExhaustedError(error)') &&
         inlineQuickAskMatch[0].includes('this.councilController.clearLaneAccess(session, quickAskModel.laneId);') &&
         inlineQuickAskMatch[0].includes('this.councilController.requestLaneAccess(') &&
+        inlineQuickAskMatch[0].includes('inferenceService.clearAccessInfo(session);') &&
+        inlineQuickAskMatch[0].includes('quickAskAccessSession = await this.ensureQuickAskAccess(') &&
         inlineQuickAskMatch[0].includes('abortController.signal') &&
         inlineQuickAskMatch[0].includes('quickAskAccessSession = this.getQuickAskAccessSession(session, quickAskModel);'),
-        'parallel quick ask should directly refresh an exhausted reused primary lane key before retrying once'
+        'quick ask should refresh exhausted single-chat or reused primary-lane access before retrying once'
+    );
+    assert.ok(
+        appSource.includes('signal: abortController.signal') &&
+        appSource.includes('refreshError?.isCancelled || abortController.signal.aborted') &&
+        appSource.includes('break retryLoop;'),
+        'main-chat key refresh should inherit Stop cancellation and exit without rendering an error'
+    );
+    assert.ok(
+        chatAreaSource.includes('this.app.getSafeInferenceErrorMessage?.('),
+        'quick ask should replace provider 403 details with safe local copy'
     );
     assert.ok(
         appSource.includes('accessAcquisitionInFlight') &&

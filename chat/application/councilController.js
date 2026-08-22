@@ -103,6 +103,10 @@ export default class CouncilController {
         this.ticketClient = ticketClient;
     }
 
+    getSafeInferenceErrorMessage(error, fallback = 'Request failed') {
+        return this.app.getSafeInferenceErrorMessage?.(error, fallback) || fallback;
+    }
+
     async runSendTurn(options) {
         return this.runMultiModelTurn(options);
     }
@@ -229,7 +233,10 @@ export default class CouncilController {
                 stageEntry.cancelledAt = Date.now();
             } else {
                 stageEntry.status = 'error';
-                stageEntry.error = error?.message || 'Request failed';
+                stageEntry.error = this.getSafeInferenceErrorMessage(
+                    error,
+                    error?.message || 'Request failed'
+                );
                 assistantMessage.council.errors.push({
                     laneId,
                     model: stageEntry.model,
@@ -1081,7 +1088,10 @@ export default class CouncilController {
                         return;
                     }
                     stageEntry.status = 'error';
-                    stageEntry.error = error?.message || 'Request failed';
+                    stageEntry.error = this.getSafeInferenceErrorMessage(
+                        error,
+                        error?.message || 'Request failed'
+                    );
                     stageEntry.streamingReasoning = false;
                     stageEntry.streamingTokens = null;
                     assistantMessage.council.errors.push({
@@ -1176,7 +1186,10 @@ export default class CouncilController {
                             assistantMessage.council.synthesis.streamingTokens = null;
                             assistantMessage.council.statusMessage = 'Stopped after first opinions.';
                         } else {
-                            const errorMessage = error?.message || 'Council synthesis failed.';
+                            const errorMessage = this.getSafeInferenceErrorMessage(
+                                error,
+                                error?.message || 'Council synthesis failed.'
+                            );
                             assistantMessage.content = canonical.response;
                             assistantMessage.model = canonical.model;
                             assistantMessage.citations = canonical.citations || null;
@@ -1251,7 +1264,10 @@ export default class CouncilController {
                 await this.app.clearSessionTitleGenerationPending(session.id);
             }
             if (assistantMessage) {
-                const errorMessage = error?.message || 'Request failed';
+                const errorMessage = this.getSafeInferenceErrorMessage(
+                    error,
+                    error?.message || 'Request failed'
+                );
                 assistantMessage.content = assistantMessage.content || 'Sorry, I encountered an error while processing the selected model request.';
                 assistantMessage.council.statusMessage = 'Model request failed.';
                 if (Array.isArray(assistantMessage.council?.stage1)) {
@@ -1269,7 +1285,11 @@ export default class CouncilController {
                 assistantMessage.isLocalOnly = true;
                 await this.saveAndRender(assistantMessage, session);
             } else {
-                await this.app.addMessage('assistant', `**Error:** ${error.message}`, { isLocalOnly: true });
+                const errorMessage = this.getSafeInferenceErrorMessage(
+                    error,
+                    error?.message || 'Request failed'
+                );
+                await this.app.addMessage('assistant', `**Error:** ${errorMessage}`, { isLocalOnly: true });
             }
         }
     }
@@ -1308,6 +1328,7 @@ export default class CouncilController {
         streamTarget = null
     }) {
         const laneSession = this.buildLaneSession(session, entry.laneId);
+        let inferenceResponseStarted = false;
         try {
             if (typeof this.inferenceService.streamCompletion === 'function') {
                 try {
@@ -1318,7 +1339,10 @@ export default class CouncilController {
                         messages,
                         searchEnabled,
                         abortController,
-                        streamTarget
+                        streamTarget,
+                        onResponseStarted: () => {
+                            inferenceResponseStarted = true;
+                        }
                     });
                 } catch (error) {
                     if (!this.isStreamingUnsupportedError(error)) {
@@ -1335,7 +1359,11 @@ export default class CouncilController {
                 abortController
             });
         } catch (error) {
-            if (!hasRetriedAfterCredit && this.app.isAccessCreditExhaustedError(error)) {
+            if (
+                !hasRetriedAfterCredit &&
+                !inferenceResponseStarted &&
+                this.app.isAccessCreditExhaustedError(error)
+            ) {
                 this.clearLaneAccess(session, entry.laneId);
                 await this.chatDB.saveSession(session);
                 await this.requestLaneAccess(session, entry, typingId, abortController?.signal || null);
@@ -1390,7 +1418,8 @@ export default class CouncilController {
         messages,
         searchEnabled,
         abortController,
-        streamTarget = null
+        streamTarget = null,
+        onResponseStarted = null
     }) {
         const laneState = streamTarget?.laneState || null;
         const assistantMessage = streamTarget?.assistantMessage || null;
@@ -1448,6 +1477,7 @@ export default class CouncilController {
                 (chunk) => {
                     markRunning();
                     if (!chunk) return;
+                    onResponseStarted?.();
                     content += chunk;
                     if (laneState) {
                         laneState.response = content;
@@ -1478,6 +1508,7 @@ export default class CouncilController {
                 (reasoningChunk) => {
                     markRunning();
                     if (!reasoningChunk) return;
+                    onResponseStarted?.();
                     if (!reasoningStartTime) {
                         reasoningStartTime = Date.now();
                     }

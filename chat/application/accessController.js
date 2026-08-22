@@ -1,20 +1,8 @@
 import { LOCAL_LOOPBACK_VERIFIER_BYPASS_STATUS } from '../services/inference/verifiedAccess.js';
-
-export function isAccessCreditExhaustedError(error) {
-    if (error?.status !== 402) return false;
-    const responseData = error.data || error.responseData || null;
-    const details = [
-        error.message,
-        responseData?.error?.message,
-        responseData?.detail,
-        responseData?.message
-    ].filter(Boolean).join(' ').toLowerCase();
-
-    return details.includes('credit') ||
-        details.includes('can only afford') ||
-        details.includes('more credits') ||
-        details.includes('max_tokens');
-}
+export {
+    getSafeInferenceErrorMessage,
+    isAccessCreditExhaustedError
+} from '../domain/inferenceError.js';
 
 function redactProofValue(value, accessInfo = null, fieldName = '') {
     const sensitiveFields = new Set([
